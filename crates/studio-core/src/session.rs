@@ -57,6 +57,11 @@ pub enum SessionCommand {
     Discard {
         reply: RequestReply,
     },
+    /// Ask the firmware to store every current request so it survives a
+    /// power cycle; needs a framed link
+    Save {
+        reply: RequestReply,
+    },
     /// Sample tuning table values by id, as `(watch id, value id)`; used by a
     /// framed link, where values have no address. A probe session ignores it.
     SetCellWatches(Vec<(u32, u32)>),
@@ -383,6 +388,11 @@ impl Worker {
                 self.requests.push((TuneRequest::Set { id, value }, reply))
             }
             SessionCommand::Discard { reply } => self.requests.push((TuneRequest::Discard, reply)),
+            SessionCommand::Save { reply } => {
+                let _ = reply.send(Err(
+                    "saving goes through the firmware; connect over USB to save".into(),
+                ));
+            }
             SessionCommand::SetCellWatches(_) => {}
             SessionCommand::Stop => {}
         }

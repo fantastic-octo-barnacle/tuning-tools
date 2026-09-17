@@ -129,6 +129,11 @@ export function requestValue(id: number, value: number): Promise<void> {
   return invoke("session_request", { id, value });
 }
 
+/** Ask the firmware to keep every current value across a power cycle. */
+export function saveValues(): Promise<void> {
+  return invoke("session_save");
+}
+
 /** Ask the firmware for every tunable's built-in default. */
 export function discardValues(): Promise<void> {
   return invoke("session_discard");

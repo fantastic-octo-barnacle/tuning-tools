@@ -20,6 +20,7 @@ pub fn run() {
             session::session_set_rate,
             session::session_request,
             session::session_discard,
+            session::session_save,
             session::list_serial_ports,
             session::watchable_leaves
         ])

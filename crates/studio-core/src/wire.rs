@@ -21,6 +21,7 @@ pub mod cmd {
     pub const READ: u8 = 0x11;
     pub const WRITE: u8 = 0x12;
     pub const DISCARD: u8 = 0x13;
+    pub const SAVE: u8 = 0x14;
     pub const WATCH: u8 = 0x20;
     pub const STATS: u8 = 0x22;
     pub const SAMPLE: u8 = 0x40;
@@ -40,6 +41,7 @@ pub fn status_message(status: u8) -> &'static str {
         8 => "this session no longer holds the tuning lease",
         9 => "another tool holds the tuning lease",
         10 => "the watch list would exceed the firmware's sample budget",
+        11 => "the firmware could not write its flash",
         _ => "the firmware refused the request",
     }
 }

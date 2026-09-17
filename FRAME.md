@@ -125,8 +125,10 @@ same codec and enums from one source.
 - **Three-layer values.** Default (factory in code), Saved (flash A/B slot
   with generation + CRC16 + read-back verify), Current (session). SAVE,
   DISCARD, RESET_FACTORY as explicit commands. RM Studio rolls Current back
-  to Saved on heartbeat timeout `[rs]`; we do not (see section 9). Storage backend is a trait the BSP
-  implements; the crate never owns a flash driver.
+  to Saved on heartbeat timeout `[rs]`; we do not (see section 9). As built:
+  SAVE and DISCARD (to Default) exist; there is no RESET_FACTORY and no
+  "discard to Saved" yet. The crate owns the record format and slot choice,
+  the firmware moves the bytes; a saved value is restored as a request at boot.
 - **RTT.** Replace `defmt_rtt` with `rtt-target` (`defmt` feature) and one
   `rtt_init!` per binary: up 0 `defmt` 1 KiB NoBlockSkip, up 1 `telemetry`
   4 KiB NoBlockSkip, down 0 `control` 256 B BlockIfFull. `defmt-rtt`
@@ -165,6 +167,7 @@ slot is tag u8, three reserved bytes, bits u32.
 | `0x11` READ | count u8, ids u32 | count u8, then per id: id u32, requested u32, applied u32 |
 | `0x12` WRITE | token u32, id u32, slot | id u32, requested u32 |
 | `0x13` DISCARD | token u32 | values reset u16 |
+| `0x14` SAVE | token u32 | generation u32, sent after the flash write verifies |
 | `0x20` WATCH | period ms u16, count u8, ids u32 | watched u8 (count or period 0 stops) |
 | `0x22` STATS | — | sample frames sent u32, dropped u32, bad frames u32 |
 | `0x40` SAMPLE | unsolicited: device time u64 us, count u8, bits u32 each | — |
@@ -236,7 +239,8 @@ Each milestone ends in something usable on a real robot.
 | M2 | `rm-telemetry` descriptor crate; firmware converts a few gimbal PID gains and state values; host reads the table over SWD; tune panel writes cells | Tune pitch `kp` live over SWD and see the response on the scope |
 | M3 | Framed protocol over RTT up 1 / down 0 and USB CDC; `TelemetrySource`; session lease, policy, SAVE/DISCARD, A/B storage | Same tune session works over the Type-C cable with no probe, and a value survives a power cycle |
 | M3a | Done: framed protocol over USB CDC, lease, policy, DISCARD, link session in the app with no ELF | Tune over the Type-C cable with no probe |
-| M3b | Deferred: SAVE with A/B flash storage (an erase must not stall the watchdog or control loop), framed protocol over RTT | A value survives a power cycle |
+| M3b | Done: SAVE to A/B sectors on the board's W25Q64 QSPI flash, restored at boot. External flash does not stall the CPU the way an internal-flash erase would, and a save costs no control ticks | A value survives a power cycle |
+| M3c | Deferred: framed protocol over RTT, so the probe carrier can SAVE too | Same session over the probe |
 | M4 | Recorder, FFT, profiles, layouts, packaging for macOS and Windows | A teammate installs a release and tunes without reading source |
 | M5 | Printable encoding, WebSocket carrier for the simulator, OpenOCD fallback | Optional, only if pulled |
 

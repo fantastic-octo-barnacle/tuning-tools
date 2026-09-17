@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! cargo run -p studio-core --example link -- [--port <path>] [--rate 100] [--secs 3] \
-//!     [--tune <name>=<value>] [--discard] <value name to plot>...
+//!     [--tune <name>=<value>] [--discard] [--save] <value name to plot>...
 //! ```
 //! Without `--port` the first port reporting the rm-telemetry product is used.
 
@@ -57,7 +57,8 @@ impl SessionSink for Print {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let (mut port, mut rate, mut secs, mut tune, mut discard) = (None, 100.0, 3, None, false);
+    let (mut port, mut rate, mut secs, mut tune) = (None, 100.0, 3, None);
+    let (mut discard, mut save) = (false, false);
     let mut names = Vec::new();
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -66,6 +67,7 @@ fn main() {
             "--secs" => secs = args.next().unwrap().parse().unwrap(),
             "--tune" => tune = args.next(),
             "--discard" => discard = true,
+            "--save" => save = true,
             _ => names.push(a),
         }
     }
@@ -122,6 +124,9 @@ fn main() {
             "discard: {:?}",
             ask(|reply| SessionCommand::Discard { reply })
         );
+    }
+    if save {
+        println!("save: {:?}", ask(|reply| SessionCommand::Save { reply }));
     }
     for _ in 0..secs {
         std::thread::sleep(Duration::from_secs(1));

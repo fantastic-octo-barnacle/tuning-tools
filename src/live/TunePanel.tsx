@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Catalog, CatalogEntry } from "../elf/api";
 import { formatValue } from "./format";
-import { discardValues, requestValue } from "./api";
+import { discardValues, requestValue, saveValues } from "./api";
 import { Tune } from "./useSession";
 
 interface Props {
@@ -45,8 +45,8 @@ function range(entry: CatalogEntry) {
 
 export function TunePanel({ catalog, catalogError, tune, connected, fromTarget, watched, onWatch }: Props) {
   const grouped = useMemo(() => (catalog ? groups(catalog) : []), [catalog]);
-  const [resetting, setResetting] = useState(false);
-  const [resetError, setResetError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"reset" | "save" | null>(null);
+  const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
 
   if (!catalog) {
     return (
@@ -60,15 +60,20 @@ export function TunePanel({ catalog, catalogError, tune, connected, fromTarget, 
   const check = tune?.check ?? null;
   const canWrite = connected && check?.state === "matches";
 
-  async function resetAll() {
-    setResetting(true);
+  async function run(action: "reset" | "save") {
+    setBusy(action);
+    setNotice(null);
     try {
-      await discardValues();
-      setResetError(null);
+      if (action === "reset") {
+        await discardValues();
+      } else {
+        await saveValues();
+        setNotice({ text: "Saved. The robot starts with these values after a power cycle.", error: false });
+      }
     } catch (e) {
-      setResetError(String(e));
+      setNotice({ text: String(e), error: true });
     } finally {
-      setResetting(false);
+      setBusy(null);
     }
   }
 
@@ -92,17 +97,31 @@ export function TunePanel({ catalog, catalogError, tune, connected, fromTarget, 
         </span>
         <button
           type="button"
-          disabled={!canWrite || resetting}
-          onClick={() => void resetAll()}
+          disabled={!canWrite || busy !== null}
+          onClick={() => void run("reset")}
           title="Request every value's built-in default"
           className="shrink-0 rounded-sm border border-rule bg-panel px-2 py-0.5 hover:bg-sunken disabled:opacity-40"
         >
           Reset all
         </button>
+        {fromTarget && (
+          <button
+            type="button"
+            disabled={!canWrite || busy !== null}
+            onClick={() => void run("save")}
+            title="Store the requested values on the robot so they survive a power cycle"
+            className="shrink-0 rounded-sm border border-led bg-led-wash px-2 py-0.5 hover:brightness-95 disabled:opacity-40"
+          >
+            {busy === "save" ? "Saving…" : "Save to robot"}
+          </button>
+        )}
       </div>
-      {resetError && (
-        <p role="alert" className="border-b border-rule px-3 py-1 text-[12px] text-danger">
-          {resetError}
+      {notice && (
+        <p
+          role={notice.error ? "alert" : "status"}
+          className={`border-b border-rule px-3 py-1 text-[12px] ${notice.error ? "text-danger" : "text-muted"}`}
+        >
+          {notice.text}
         </p>
       )}
       <div className="min-h-0 flex-1 overflow-auto">

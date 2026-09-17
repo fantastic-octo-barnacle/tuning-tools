@@ -24,6 +24,8 @@ use crate::tune::{CatalogCheck, TuneValue};
 use crate::wire::{self, cmd, Decoder, Frame, Reader};
 
 const REPLY_TIMEOUT: Duration = Duration::from_millis(1000);
+/// A save erases and programs a flash sector before it answers.
+pub const SAVE_TIMEOUT: Duration = Duration::from_millis(3000);
 const HELLO_ATTEMPTS: usize = 3;
 const HELLO_TIMEOUT: Duration = Duration::from_millis(400);
 const LEASE_RENEW: Duration = Duration::from_millis(1000);
@@ -70,6 +72,7 @@ enum Pending {
     Watch(Vec<Subscription>, u16),
     Write(RequestReply),
     Discard(RequestReply),
+    Save(RequestReply),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -296,7 +299,8 @@ impl Worker {
         let _ = self.send(cmd::RELEASE, &self.token.to_le_bytes());
         self.flush_frame();
         for (_, (pending, _)) in self.pending.drain() {
-            if let Pending::Write(reply) | Pending::Discard(reply) = pending {
+            if let Pending::Write(reply) | Pending::Discard(reply) | Pending::Save(reply) = pending
+            {
                 let _ = reply.send(Err("the link closed".into()));
             }
         }
@@ -352,6 +356,9 @@ impl Worker {
                         &self.token.to_le_bytes(),
                         Pending::Discard(reply),
                     )?;
+                }
+                SessionCommand::Save { reply } => {
+                    self.request(cmd::SAVE, &self.token.to_le_bytes(), Pending::Save(reply))?;
                 }
                 SessionCommand::SetRate(_)
                 | SessionCommand::SetWatches(_)
@@ -434,7 +441,7 @@ impl Worker {
         };
         let refused = (status != 0).then(|| wire::status_message(status).to_string());
         match pending {
-            Pending::Write(reply) | Pending::Discard(reply) => {
+            Pending::Write(reply) | Pending::Discard(reply) | Pending::Save(reply) => {
                 let _ = reply.send(refused.map_or(Ok(()), Err));
             }
             Pending::Watch(subs, period) => match status {
@@ -561,13 +568,20 @@ impl Worker {
         let late: Vec<u16> = self
             .pending
             .iter()
-            .filter(|(_, (_, sent))| now - *sent > REPLY_TIMEOUT)
+            .filter(|(_, (pending, sent))| {
+                let limit = if matches!(pending, Pending::Save(_)) {
+                    SAVE_TIMEOUT
+                } else {
+                    REPLY_TIMEOUT
+                };
+                now - *sent > limit
+            })
             .map(|(&seq, _)| seq)
             .collect();
         for seq in late {
             if let Some((pending, _)) = self.pending.remove(&seq) {
                 match pending {
-                    Pending::Write(reply) | Pending::Discard(reply) => {
+                    Pending::Write(reply) | Pending::Discard(reply) | Pending::Save(reply) => {
                         let _ = reply.send(Err("the firmware did not answer in time".into()));
                     }
                     Pending::Lease => {

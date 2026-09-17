@@ -37,6 +37,7 @@ struct Firmware {
     next_sample: Instant,
     sample_seq: u16,
     armed: bool,
+    saved: Vec<(u32, u32)>,
 }
 
 impl Firmware {
@@ -84,6 +85,7 @@ impl Firmware {
             next_sample: Instant::now(),
             sample_seq: 0,
             armed: true,
+            saved: Vec::new(),
         }
     }
 
@@ -183,6 +185,10 @@ impl Firmware {
                     c.requested = c.default;
                 }
                 self.reply(code, seq, 0, &2u16.to_le_bytes());
+            }
+            cmd::SAVE => {
+                self.saved = self.cells.iter().map(|c| (c.id, c.requested)).collect();
+                self.reply(code, seq, 0, &1u32.to_le_bytes());
             }
             cmd::WATCH => {
                 let period = r.u16().unwrap();
@@ -351,6 +357,11 @@ fn writes_go_through_the_firmware_checks() {
     session.send(SessionCommand::Discard { reply });
     rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
     assert_eq!(fw.lock().unwrap().cells[0].requested, 40.0f32.to_bits());
+
+    let (reply, rx) = mpsc::sync_channel(1);
+    session.send(SessionCommand::Save { reply });
+    rx.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+    assert!(fw.lock().unwrap().saved.contains(&(KP, 40.0f32.to_bits())));
 }
 
 #[test]

@@ -299,9 +299,26 @@ pub async fn session_discard(state: State<'_, SessionState>) -> Result<(), Strin
     wait_reply(rx).await
 }
 
+/// Ask the firmware to keep every current value across a power cycle.
+#[tauri::command]
+pub async fn session_save(state: State<'_, SessionState>) -> Result<(), String> {
+    let (reply, rx) = mpsc::sync_channel(1);
+    if !state.send(SessionCommand::Save { reply }) {
+        return Err("connect to the target first".into());
+    }
+    wait_reply_for(rx, studio_core::link::SAVE_TIMEOUT + REQUEST_TIMEOUT).await
+}
+
 async fn wait_reply(rx: mpsc::Receiver<Result<(), String>>) -> Result<(), String> {
+    wait_reply_for(rx, REQUEST_TIMEOUT).await
+}
+
+async fn wait_reply_for(
+    rx: mpsc::Receiver<Result<(), String>>,
+    timeout: Duration,
+) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        rx.recv_timeout(REQUEST_TIMEOUT)
+        rx.recv_timeout(timeout)
             .unwrap_or_else(|_| Err("the target did not take the write in time".into()))
     })
     .await
