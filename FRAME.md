@@ -225,6 +225,10 @@ Each milestone ends in something usable on a real robot.
 - **F64.** Not in the wire format. Cortex-M4F/M7 firmware has no use for it;
   the host widens.
 - **OpenOCD.** Keep the carrier stub, do not spend on it.
+- **Probe read speed.** probe-rs spends two USB exchanges per region; one
+  batched CMSIS-DAP packet per tick is ~10× faster for spread-out watches and
+  was proven feasible by handing the probe over after a probe-rs attach.
+  Deferred; see [ADR 0001](docs/adr/0001-batched-cmsis-dap-reads.md).
 - **Simulator.** `rm-sim-rs` should speak the same frames over WebSocket, so
   the studio is also the simulator's tuning UI. Deferred to M5.
 

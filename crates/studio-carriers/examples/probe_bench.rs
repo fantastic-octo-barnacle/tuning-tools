@@ -32,7 +32,9 @@ fn main() {
         let mut probe = probes[0].open().expect("open probe");
         let _ = probe.set_speed(khz);
         let actual = probe.speed_khz();
-        let mut session = probe.attach(chip.as_str(), Permissions::default()).expect("attach");
+        let mut session = probe
+            .attach(chip.as_str(), Permissions::default())
+            .expect("attach");
         let ap = memory_ap(&session.target().cores[0]);
         let iface = session.get_arm_interface().unwrap();
         let mut mem = iface.memory_interface(&ap).unwrap();
@@ -41,14 +43,23 @@ fn main() {
             for _ in 0..n {
                 f();
             }
-            println!("speed {actual:>5} kHz  {label:<22} {:>6.0} us", start.elapsed().as_secs_f64() * 1e6 / n as f64);
+            println!(
+                "speed {actual:>5} kHz  {label:<22} {:>6.0} us",
+                start.elapsed().as_secs_f64() * 1e6 / n as f64
+            );
         };
         for words in [1usize, 4, 16, 64] {
             let mut bytes = vec![0u8; words * 4];
-            time(&format!("read {} B", words * 4), &mut || mem.read(address, &mut bytes).unwrap());
+            time(&format!("read {} B", words * 4), &mut || {
+                mem.read(address, &mut bytes).unwrap()
+            });
             let mut w = vec![0u32; words];
-            time(&format!("read_32 x{words}"), &mut || mem.read_32(address, &mut w).unwrap());
-            time(&format!("read_8 {} B", words * 4), &mut || mem.read_8(address, &mut bytes).unwrap());
+            time(&format!("read_32 x{words}"), &mut || {
+                mem.read_32(address, &mut w).unwrap()
+            });
+            time(&format!("read_8 {} B", words * 4), &mut || {
+                mem.read_8(address, &mut bytes).unwrap()
+            });
         }
     }
 }
