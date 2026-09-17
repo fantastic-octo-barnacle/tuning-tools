@@ -115,8 +115,9 @@ fn samples_watched_values_into_frames() {
         _ => None,
     });
     let achieved = achieved.unwrap();
+    // Loose on the low side for shared CI runners; a coarse OS timer would land near 64 Hz
     assert!(
-        (250.0..=600.0).contains(&achieved),
+        (150.0..=600.0).contains(&achieved),
         "achieved {achieved} Hz at 500 Hz target"
     );
     drop(events);

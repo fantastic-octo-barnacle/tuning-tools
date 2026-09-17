@@ -54,6 +54,25 @@ impl Ticker {
     }
 }
 
+/// The OS sleep ends this early and the rest is spun, for sub-millisecond deadlines.
+const SPIN: Duration = Duration::from_micros(500);
+
+/// Sleep until `deadline`, returning at most a few tens of microseconds late.
+pub fn sleep_until(deadline: Instant) {
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return;
+        }
+        let left = deadline - now;
+        if left > SPIN {
+            std::thread::sleep(left - SPIN);
+        } else {
+            std::thread::yield_now();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

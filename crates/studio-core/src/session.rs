@@ -2,7 +2,7 @@
 //! watched set on absolute deadlines, pumps the log stream and reports status.
 //! Everything else talks to it through [`SessionCommand`]s.
 
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Sender, TryRecvError};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -14,7 +14,7 @@ use studio_carriers::{cortex_m, CarrierError, CoreState, Link, MemoryAccess, Str
 use crate::frame::FrameBuilder;
 use crate::log::{LogDecoder, LogLine};
 use crate::plan::{ReadItem, ReadPlan};
-use crate::schedule::Ticker;
+use crate::schedule::{sleep_until, Ticker};
 use crate::stats::{LinkStats, StatsSnapshot};
 
 pub const FRAME_PERIOD: Duration = Duration::from_millis(33);
@@ -23,6 +23,8 @@ pub const STATS_PERIOD: Duration = Duration::from_millis(500);
 pub const MAX_RATE_HZ: f64 = 2000.0;
 /// Every read failing for this long means the link is gone.
 pub const LINK_LOST_AFTER: Duration = Duration::from_secs(2);
+/// Longest a command waits while the worker has nothing due.
+const COMMAND_POLL: Duration = Duration::from_millis(10);
 /// Every read failing for this long reopens target memory, which recovers a
 /// probe whose access port lost its state.
 pub const REOPEN_AFTER: Duration = Duration::from_millis(250);
@@ -154,6 +156,7 @@ struct Worker {
     log_buf: Vec<u8>,
     last_error: Option<String>,
     failing_since: Option<Instant>,
+    stopping: bool,
     log_tick: Ticker,
     frame_tick: Ticker,
     stats_tick: Ticker,
@@ -193,6 +196,7 @@ impl Worker {
             log_buf: vec![0; 4096],
             last_error: None,
             failing_since: None,
+            stopping: false,
             log_tick: Ticker::new(start, LOG_PERIOD),
             frame_tick: Ticker::new(start, FRAME_PERIOD),
             stats_tick: Ticker::new(start + STATS_PERIOD, STATS_PERIOD),
@@ -219,12 +223,15 @@ impl Worker {
                         break Some(e.to_string());
                     }
                     self.last_error = Some(e.to_string());
-                    match rx.recv_timeout(REOPEN_AFTER) {
-                        Ok(SessionCommand::Stop) | Err(RecvTimeoutError::Disconnected) => {
-                            break None
+                    let retry = now + REOPEN_AFTER;
+                    while Instant::now() < retry {
+                        sleep_until((Instant::now() + COMMAND_POLL).min(retry));
+                        if self.drain_commands(&rx) {
+                            break;
                         }
-                        Ok(command) => self.apply(command),
-                        Err(RecvTimeoutError::Timeout) => {}
+                    }
+                    if self.stopping {
+                        break None;
                     }
                 }
             }
@@ -257,13 +264,11 @@ impl Worker {
             if let Some(s) = &self.sampler {
                 next = next.min(s.deadline());
             }
-            let wait = next.saturating_duration_since(Instant::now());
-            match rx.recv_timeout(wait) {
-                Ok(SessionCommand::Stop) | Err(RecvTimeoutError::Disconnected) => {
-                    return Exit::Stop
-                }
-                Ok(command) => self.apply(command),
-                Err(RecvTimeoutError::Timeout) => {}
+            // A thread sleep, not `recv_timeout`: channel timeouts round up to the
+            // 15.6 ms system tick on Windows, which would cap sampling near 64 Hz
+            sleep_until(next);
+            if self.drain_commands(rx) {
+                return Exit::Stop;
             }
 
             let now = Instant::now();
@@ -286,6 +291,20 @@ impl Worker {
             }
             if self.stats_tick.poll(now) {
                 self.report_stats(memory);
+            }
+        }
+    }
+
+    /// Apply every queued command; `true` when the session should stop.
+    fn drain_commands(&mut self, rx: &mpsc::Receiver<SessionCommand>) -> bool {
+        loop {
+            match rx.try_recv() {
+                Ok(SessionCommand::Stop) | Err(TryRecvError::Disconnected) => {
+                    self.stopping = true;
+                    return true;
+                }
+                Ok(command) => self.apply(command),
+                Err(TryRecvError::Empty) => return false,
             }
         }
     }
