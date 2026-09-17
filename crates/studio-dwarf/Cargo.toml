@@ -1,0 +1,16 @@
+[package]
+name = "studio-dwarf"
+version = "0.1.0"
+description = "ELF symbols and DWARF type information for tuning-tools"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+cpp_demangle = "0.4"
+gimli = { workspace = true }
+object = { workspace = true }
+rustc-demangle = "0.1"
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

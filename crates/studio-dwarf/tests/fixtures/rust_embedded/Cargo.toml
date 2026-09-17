@@ -1,0 +1,15 @@
+[package]
+name = "test_rust_embedded"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = "s"
+debug = true
+lto = true
