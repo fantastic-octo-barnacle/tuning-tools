@@ -1,0 +1,15 @@
+[package]
+name = "studio-core"
+version = "0.1.0"
+description = "Read planning, sampling scheduler, probe statistics and defmt decoding"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+defmt-decoder = "1.1"
+serde = { workspace = true }
+studio-carriers = { path = "../studio-carriers" }
+studio-dwarf = { path = "../studio-dwarf" }
+thiserror = { workspace = true }
+tracing = { workspace = true }

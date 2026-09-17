@@ -12,6 +12,14 @@
   --scalar: #2f5f86;
   --enum: #7a4a78;
   --danger: #a33a2c;
+  --trace-1: #b87800;
+  --trace-2: #2f6fa6;
+  --trace-3: #3d8a4f;
+  --trace-4: #b0452f;
+  --trace-5: #7a4a9e;
+  --trace-6: #1d8a8a;
+  --trace-7: #8a6a3a;
+  --trace-8: #c0487e;
   color-scheme: light;
 }
 
@@ -28,6 +36,14 @@
     --scalar: #8db8dc;
     --enum: #cf9fcc;
     --danger: #f08a78;
+    --trace-1: #f0a91f;
+    --trace-2: #6fb0e8;
+    --trace-3: #7cc98a;
+    --trace-4: #f0856c;
+    --trace-5: #bf98e6;
+    --trace-6: #5fd0cc;
+    --trace-7: #d9b27a;
+    --trace-8: #f08cba;
     color-scheme: dark;
   }
 }

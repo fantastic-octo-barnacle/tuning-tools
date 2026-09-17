@@ -35,13 +35,23 @@ function buildNamespaces(roots: RootNode[]): Namespace {
   return top;
 }
 
+/** Numbers, and containers that may hold numbers, on a readable node. */
+export function watchable(node: SymbolNode) {
+  if (!node.readable) return false;
+  if (node.kind === "scalar" || node.kind === "enum") return node.scalar !== null && typeof node.scalar === "string";
+  return node.kind === "struct" || node.kind === "array" || node.kind === "taggedEnum";
+}
+
 interface Props {
   roots: RootNode[];
   selected: SymbolNode | null;
   onSelect: (node: SymbolNode) => void;
+  /** Watch a node (a number, or the numbers inside it) */
+  onWatch?: (node: SymbolNode) => void;
+  watched?: Set<string>;
 }
 
-export function SymbolTree({ roots, selected, onSelect }: Props) {
+export function SymbolTree({ roots, selected, onSelect, onWatch, watched }: Props) {
   const [filter, setFilter] = useState("");
   const [hideReadOnly, setHideReadOnly] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -133,7 +143,9 @@ export function SymbolTree({ roots, selected, onSelect }: Props) {
       listRef.current?.querySelector<HTMLElement>(`[data-key="${CSS.escape(target.key)}"]`)?.focus();
       if (target.type === "node") onSelect(target.node);
     };
-    if (e.key === "ArrowDown") focus(index + 1);
+    if ((e.key === "w" || e.key === "W") && row?.type === "node" && onWatch && watchable(row.node)) {
+      onWatch(row.node);
+    } else if (e.key === "ArrowDown") focus(index + 1);
     else if (e.key === "ArrowUp") focus(index - 1);
     else if (row && (e.key === "ArrowRight" || e.key === "ArrowLeft")) {
       const open = row.type === "namespace" ? needle !== "" || expanded.has(row.key) : expanded.has(row.key);
@@ -206,7 +218,7 @@ export function SymbolTree({ roots, selected, onSelect }: Props) {
                 else onSelect(row.node);
               }}
               onDoubleClick={() => !isNs && row.node.expandable && toggle(row.key, row.node)}
-              className={`flex cursor-default items-center gap-1.5 border-l-2 pr-3 leading-[22px] select-none ${
+              className={`group flex cursor-default items-center gap-1.5 border-l-2 pr-2 leading-[22px] select-none ${
                 isSelected ? "border-led bg-led-wash" : "border-transparent hover:bg-sunken"
               }`}
             >
@@ -242,6 +254,25 @@ export function SymbolTree({ roots, selected, onSelect }: Props) {
                   >
                     {row.node.typeName}
                   </span>
+                  {onWatch && watchable(row.node) && (
+                    <button
+                      tabIndex={-1}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onWatch(row.node);
+                      }}
+                      title={row.node.expandable ? "Watch the numbers inside (W)" : "Watch (W)"}
+                      className={`shrink-0 rounded-sm px-1.5 text-[11px] leading-[18px] hover:bg-panel ${
+                        watched?.has(row.node.path)
+                          ? "text-led"
+                          : isSelected
+                            ? "text-muted"
+                            : "invisible text-muted group-hover:visible"
+                      }`}
+                    >
+                      {watched?.has(row.node.path) ? "Watching" : "Watch"}
+                    </button>
+                  )}
                 </>
               )}
             </div>

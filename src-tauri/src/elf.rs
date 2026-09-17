@@ -14,7 +14,7 @@ use tauri::State;
 pub struct LoadedElf(Mutex<Option<Arc<ElfInfo>>>);
 
 impl LoadedElf {
-    fn current(&self) -> Result<Arc<ElfInfo>, String> {
+    pub fn current(&self) -> Result<Arc<ElfInfo>, String> {
         self.0
             .lock()
             .expect("elf state poisoned")

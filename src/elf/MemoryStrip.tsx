@@ -13,7 +13,7 @@ export function MemoryStrip({ node, roots }: { node: SymbolNode; roots: RootNode
   const w = (size: number | null) => Math.max(((size ?? 0) / span) * 1000, 1.5);
 
   return (
-    <figure className="mt-6">
+    <figure className="mt-4">
       <svg viewBox="0 0 1000 28" preserveAspectRatio="none" className="h-7 w-full" role="img"
         aria-label={`${node.label} at ${hex(node.address)} among ${neighbours.length} statics from ${hex(start)} to ${hex(end)}`}>
         <rect x="0" y="6" width="1000" height="16" fill="var(--sunken)" />
