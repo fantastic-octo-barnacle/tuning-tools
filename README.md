@@ -10,7 +10,7 @@ Architecture notes on the projects it draws from are in
 
 ## Status
 
-M2. `studio-dwarf` parses C, C++ and Rust firmware ELFs (symbols, DWARF
+M3, first half. `studio-dwarf` parses C, C++ and Rust firmware ELFs (symbols, DWARF
 types, Rust enums with data, rebuild diff). The app browses statics as a
 module tree, attaches to a running target through a debug probe (probe-rs,
 no halt, no reset), samples watched numbers on absolute deadlines, plots them,
@@ -20,7 +20,14 @@ A firmware that declares an `rm-telemetry` table gets a Tune tab: its gains
 and published state by name, unit and range. The app decodes the table from
 the ELF, checks that the target runs that build before it writes, and sends
 requests over SWD; the firmware applies them inside its declared range and
-step. The framed protocol, saving values and USB come in M3.
+step.
+
+The same Tune tab works over the robot's Type-C cable with no probe and no
+ELF: pick USB, and the app speaks the `rm-telemetry` framed protocol, takes
+the firmware's tuning lease, lists the table the firmware reports, writes
+requests, resets them to defaults, and plots watched values the firmware
+streams. Saving values to flash and the framed protocol over RTT are not done
+yet.
 
 ## Develop
 
@@ -46,6 +53,7 @@ STUDIO_DWARF_ELF=path/to/firmware cargo test -p studio-dwarf -- --ignored
 Check a probe and board without the app (prints values and log lines):
 
 ```bash
+cargo run -p studio-core --example link -- --port /dev/cu.usbmodem101 --rate 500 <value name>...   # USB link, no app
 cargo run -p studio-core --example watch -- --elf path/to/firmware --list
 cargo run -p studio-core --example watch -- --elf path/to/firmware --chip STM32H723VG <static path>...
 cargo run --release -p studio-carriers --example probe_bench -- STM32H723VG   # raw SWD read latency

@@ -84,7 +84,7 @@ export interface CatalogEntry {
   name: string;
   unit: string;
   kind: CellKind;
-  access: "readOnly" | "live";
+  access: "readOnly" | "live" | "safeOnly";
   default: number;
   min: number | null;
   max: number | null;

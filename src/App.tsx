@@ -24,7 +24,11 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [leftTab, setLeftTab] = useState<"symbols" | "tune">("symbols");
   const session = useSession();
-  const watch = useWatches(elf);
+  // A framed link lists its own values, so it works without an ELF
+  const linkOnly = elf === null && session.catalog !== null;
+  const watch = useWatches(elf?.summary.path ?? (linkOnly ? "link" : null), elf);
+  const catalog = session.catalog ?? elf?.catalog ?? null;
+  const tab = linkOnly ? "tune" : leftTab;
 
   async function loadElf(path: string) {
     setLoading(fileName(path));
@@ -111,25 +115,25 @@ export default function App() {
         </div>
       )}
 
-      {elf ? (
+      {elf || linkOnly ? (
         <main className="grid min-h-0 flex-1 grid-cols-[minmax(300px,30%)_1fr]">
           <section className="flex min-h-0 flex-col border-r border-rule">
             <div role="tablist" className="flex gap-1 border-b border-rule bg-panel px-2 pt-1.5">
-              {(["symbols", "tune"] as const).map((tab) => (
+              {(elf ? (["symbols", "tune"] as const) : (["tune"] as const)).map((t) => (
                 <button
-                  key={tab}
+                  key={t}
                   role="tab"
-                  aria-selected={leftTab === tab}
-                  onClick={() => setLeftTab(tab)}
+                  aria-selected={tab === t}
+                  onClick={() => setLeftTab(t)}
                   className={`rounded-t-sm border border-b-0 px-3 py-1 ${
-                    leftTab === tab ? "border-rule bg-surface text-ink" : "border-transparent text-muted hover:text-ink"
+                    tab === t ? "border-rule bg-surface text-ink" : "border-transparent text-muted hover:text-ink"
                   }`}
                 >
-                  {tab === "symbols" ? "Symbols" : `Tune${elf.catalog ? ` (${elf.catalog.entries.length})` : ""}`}
+                  {t === "symbols" ? "Symbols" : `Tune${catalog ? ` (${catalog.entries.length})` : ""}`}
                 </button>
               ))}
             </div>
-            {leftTab === "symbols" ? (
+            {tab === "symbols" && elf ? (
               <>
                 <div className="min-h-0 flex-1">
                   <SymbolTree
@@ -147,8 +151,9 @@ export default function App() {
             ) : (
               <div className="min-h-0 flex-1 bg-surface">
                 <TunePanel
-                  catalog={elf.catalog}
-                  catalogError={elf.catalogError}
+                  catalog={catalog}
+                  catalogError={elf?.catalogError ?? null}
+                  fromTarget={session.catalog !== null}
                   tune={session.tune}
                   connected={connected}
                   watched={watchedPaths}
@@ -186,7 +191,8 @@ export default function App() {
             <p className="mt-2 leading-relaxed text-muted">
               Pick the ELF that cargo or your IDE produced, for example
               <span className="font-mono text-ink"> target/thumbv7em-none-eabihf/release/balance-infantry-chassis</span>.
-              Then connect the debug probe to plot its statics and read its defmt log while it runs.
+              Then connect the debug probe to plot its statics and read its defmt log while it runs. To tune
+              values without a probe, pick USB and connect to the robot's Type-C port.
             </p>
           </div>
         </main>

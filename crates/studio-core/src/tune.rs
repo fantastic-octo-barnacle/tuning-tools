@@ -4,7 +4,7 @@
 use serde::Serialize;
 use studio_carriers::MemoryAccess;
 
-use crate::catalog::{widen, Catalog, CatalogEntry, CellKind, TableLayout};
+use crate::catalog::{widen, Access, Catalog, CatalogEntry, CellKind, TableLayout};
 use crate::plan::ReadPlan;
 
 /// Whether the target's own table matches the ELF's. Writes wait for `Matches`:
@@ -93,6 +93,21 @@ impl Tuner {
                 applied: cell(e, self.row[2 * i + 1]),
             })
             .collect()
+    }
+
+    /// Request every tunable's built-in default.
+    pub fn discard(&mut self, memory: &mut dyn MemoryAccess) -> Result<(), String> {
+        let ids: Vec<(u32, f64)> = self
+            .catalog
+            .entries
+            .iter()
+            .filter(|e| e.access != Access::ReadOnly)
+            .map(|e| (e.id, e.default))
+            .collect();
+        for (id, default) in ids {
+            self.request(memory, id, default)?;
+        }
+        Ok(())
     }
 
     /// Write a request for `value` into the cell of entry `id`.

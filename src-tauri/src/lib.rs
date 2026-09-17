@@ -19,6 +19,8 @@ pub fn run() {
             session::session_set_watches,
             session::session_set_rate,
             session::session_request,
+            session::session_discard,
+            session::list_serial_ports,
             session::watchable_leaves
         ])
         .run(tauri::generate_context!())

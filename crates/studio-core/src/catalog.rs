@@ -39,7 +39,8 @@ pub enum CellKind {
 }
 
 impl CellKind {
-    fn from_tag(tag: u8) -> Option<Self> {
+    /// `rm_telemetry::Kind` discriminant
+    pub fn from_tag(tag: u8) -> Option<Self> {
         Some(match tag {
             0 => Self::F32,
             1 => Self::I32,
@@ -47,6 +48,15 @@ impl CellKind {
             3 => Self::Bool,
             _ => return None,
         })
+    }
+
+    pub fn tag(self) -> u8 {
+        match self {
+            Self::F32 => 0,
+            Self::I32 => 1,
+            Self::U32 => 2,
+            Self::Bool => 3,
+        }
     }
 
     pub fn decode(self, bits: u32) -> f64 {
@@ -91,6 +101,21 @@ impl CellKind {
 pub enum Access {
     ReadOnly,
     Live,
+    /// Tunable while the robot is disarmed; the firmware enforces it on the
+    /// framed link, a raw SWD write is not checked
+    SafeOnly,
+}
+
+impl Access {
+    /// `rm_telemetry::Access` discriminant
+    pub fn from_tag(tag: u64) -> Option<Self> {
+        Some(match tag {
+            0 => Self::ReadOnly,
+            1 => Self::Live,
+            2 => Self::SafeOnly,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -134,7 +159,7 @@ impl CatalogEntry {
     /// Bits to write for a request of `value`, checked as the firmware will
     /// check it, so the user hears about a bad value before it is sent.
     pub fn request_bits(&self, value: f64) -> Result<u32, String> {
-        if self.access != Access::Live {
+        if self.access == Access::ReadOnly {
             return Err(format!("{} is read-only", self.name));
         }
         if let (Some(min), Some(max)) = (self.min, self.max) {
@@ -351,18 +376,16 @@ impl TableLayout {
         let kind_tag = read_uint(memory, at, self.kind)? as u8;
         let kind =
             CellKind::from_tag(kind_tag).ok_or_else(|| invalid(format!("kind {kind_tag}")))?;
-        let access = match read_uint(memory, at, self.access)? {
-            0 => Access::ReadOnly,
-            1 => Access::Live,
-            other => return Err(invalid(format!("access {other}"))),
-        };
+        let access_tag = read_uint(memory, at, self.access)?;
+        let access =
+            Access::from_tag(access_tag).ok_or_else(|| invalid(format!("access {access_tag}")))?;
         let name = read_text(memory, at, self.name_ptr, self.name_len)?;
         let unit = read_text(memory, at, self.unit_ptr, self.unit_len)?;
         let float = |memory: &mut dyn MemoryAccess, field| -> Result<Option<f64>, CatalogError> {
             let v = f32::from_bits(read_uint(memory, at, field)? as u32);
             Ok(v.is_finite().then_some(widen(v)))
         };
-        let tunable = access == Access::Live;
+        let tunable = access != Access::ReadOnly;
         let min = float(memory, self.min)?.filter(|_| tunable);
         let max = float(memory, self.max)?.filter(|_| tunable);
         let max_step = float(memory, self.max_step)?.filter(|_| tunable);

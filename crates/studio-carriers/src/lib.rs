@@ -1,8 +1,9 @@
 //! Carriers: how the studio reaches a target.
 //!
-//! A carrier gives random access to target memory ([`MemoryAccess`]). The log
-//! stream (RTT) and the core run state are read through that same memory, so a
-//! probe needs one open memory interface and nothing else. Every carrier is
+//! A probe carrier gives random access to target memory ([`MemoryAccess`]). The
+//! log stream (RTT) and the core run state are read through that same memory,
+//! so a probe needs one open memory interface and nothing else. A serial
+//! carrier ([`ByteStream`]) moves the firmware's framed protocol instead. Every carrier is
 //! owned by one hardware thread; the traits take `&mut self` and nothing here
 //! is shared.
 
@@ -10,6 +11,7 @@ pub mod cortex_m;
 pub mod mock;
 pub mod probe;
 pub mod rtt;
+pub mod serial;
 
 use serde::Serialize;
 
@@ -33,6 +35,10 @@ pub enum CarrierError {
         len: usize,
         reason: String,
     },
+    #[error("could not open {port}: {reason}")]
+    Port { port: String, reason: String },
+    #[error("the link to the target was lost: {0}")]
+    Stream(String),
     #[error("{0}")]
     Other(String),
 }
@@ -57,6 +63,13 @@ pub enum StreamState {
         /// The firmware blocks when the buffer is full, so a slow host stalls it
         blocking: bool,
     },
+}
+
+/// An ordered byte link to the firmware: USB CDC, a UART, or a test double.
+pub trait ByteStream: Send {
+    /// Read what has arrived, waiting briefly; `Ok(0)` when nothing did.
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize>;
+    fn write_all(&mut self, bytes: &[u8]) -> Result<()>;
 }
 
 /// Run state of the core, polled at a low rate.

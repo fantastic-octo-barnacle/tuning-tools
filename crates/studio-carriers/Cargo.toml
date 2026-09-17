@@ -1,7 +1,7 @@
 [package]
 name = "studio-carriers"
 version = "0.1.0"
-description = "Target memory and byte-stream carriers: probe-rs over SWD, RTT, mock"
+description = "Target memory and byte-stream carriers: probe-rs over SWD, RTT, USB serial, mock"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
@@ -9,6 +9,7 @@ authors.workspace = true
 [dependencies]
 probe-rs = "0.32"
 probe-rs-target = "0.32"
+serialport = "4.10"
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

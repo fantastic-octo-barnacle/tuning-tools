@@ -3,12 +3,14 @@
 
 pub mod catalog;
 pub mod frame;
+pub mod link;
 pub mod log;
 pub mod plan;
 pub mod schedule;
 pub mod session;
 pub mod stats;
 pub mod tune;
+pub mod wire;
 
 pub use plan::{ReadItem, ReadPlan};
 pub use session::{Session, SessionCommand, SessionEvent, SessionSink};

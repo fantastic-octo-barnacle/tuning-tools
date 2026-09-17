@@ -34,7 +34,13 @@ const COMMAND_POLL: Duration = Duration::from_millis(10);
 pub const REOPEN_AFTER: Duration = Duration::from_millis(250);
 
 pub type RequestReply = SyncSender<Result<(), String>>;
-type PendingRequest = (u32, f64, RequestReply);
+type PendingRequest = (TuneRequest, RequestReply);
+
+#[derive(Debug, Clone, Copy)]
+enum TuneRequest {
+    Set { id: u32, value: f64 },
+    Discard,
+}
 
 pub enum SessionCommand {
     SetWatches(Vec<ReadItem>),
@@ -47,6 +53,13 @@ pub enum SessionCommand {
         value: f64,
         reply: RequestReply,
     },
+    /// Ask for every tunable's built-in default
+    Discard {
+        reply: RequestReply,
+    },
+    /// Sample tuning table values by id, as `(watch id, value id)`; used by a
+    /// framed link, where values have no address. A probe session ignores it.
+    SetCellWatches(Vec<(u32, u32)>),
     Stop,
 }
 
@@ -82,6 +95,10 @@ pub enum SessionEvent {
     Tune {
         check: CatalogCheck,
         values: Vec<TuneValue>,
+    },
+    /// The catalog a framed link's firmware sent; a probe session never sends it
+    Catalog {
+        catalog: Catalog,
     },
 }
 
@@ -128,6 +145,13 @@ impl Session {
                 }
             })
             .expect("spawn session thread");
+        Self {
+            tx,
+            thread: Some(thread),
+        }
+    }
+
+    pub(crate) fn from_parts(tx: Sender<SessionCommand>, thread: JoinHandle<()>) -> Self {
         Self {
             tx,
             thread: Some(thread),
@@ -254,7 +278,7 @@ impl Worker {
                         if self.drain_commands(&rx) {
                             break;
                         }
-                        for (_, _, reply) in self.requests.drain(..) {
+                        for (_, reply) in self.requests.drain(..) {
                             let _ = reply.send(Err("the target's memory is not open".into()));
                         }
                     }
@@ -355,7 +379,11 @@ impl Worker {
                     Tuner::new(layout, catalog)
                 });
             }
-            SessionCommand::Request { id, value, reply } => self.requests.push((id, value, reply)),
+            SessionCommand::Request { id, value, reply } => {
+                self.requests.push((TuneRequest::Set { id, value }, reply))
+            }
+            SessionCommand::Discard { reply } => self.requests.push((TuneRequest::Discard, reply)),
+            SessionCommand::SetCellWatches(_) => {}
             SessionCommand::Stop => {}
         }
     }
@@ -439,13 +467,16 @@ impl Worker {
         if self.requests.is_empty() {
             return false;
         }
-        for (id, value, reply) in std::mem::take(&mut self.requests) {
+        for (request, reply) in std::mem::take(&mut self.requests) {
             let result = match &mut self.tuner {
                 Some(tuner) => {
                     if let Some(e) = tuner.verify(memory) {
                         self.last_error = Some(e);
                     }
-                    tuner.request(memory, id, value)
+                    match request {
+                        TuneRequest::Set { id, value } => tuner.request(memory, id, value),
+                        TuneRequest::Discard => tuner.discard(memory),
+                    }
                 }
                 None => Err("the open ELF declares no tuning table".into()),
             };

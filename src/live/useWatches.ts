@@ -48,9 +48,12 @@ function assignTraces(watches: Watch[]): Watch[] {
   });
 }
 
-/** The watched set for the open ELF, kept in sync with the session. */
-export function useWatches(elf: OpenedElf | null) {
-  const elfPath = elf?.summary.path ?? null;
+/**
+ * The watched set, kept in sync with the session. `owner` names the list: the
+ * ELF path, or a fixed key for a link with no ELF.
+ */
+export function useWatches(owner: string | null, elf: OpenedElf | null) {
+  const elfPath = owner;
   // The list remembers which ELF it belongs to, so a switch never saves one ELF's list under another
   const [state, setState] = useState<{ owner: string | null; list: Watch[] }>({ owner: null, list: [] });
   const watches = state.owner === elfPath ? state.list : [];

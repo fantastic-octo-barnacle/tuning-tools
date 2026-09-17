@@ -1,5 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { NodeRef, SymbolNode } from "../elf/api";
+import { Catalog, NodeRef, SymbolNode } from "../elf/api";
 
 export interface ProbeInfo {
   selector: string;
@@ -57,13 +57,31 @@ export type SessionEvent =
   | { type: "status"; state: LinkState; message: string | null }
   | ({ type: "stats" } & Stats)
   | { type: "log"; lines: LogLine[] }
-  | { type: "tune"; check: CatalogCheck; values: TuneValue[] };
+  | { type: "tune"; check: CatalogCheck; values: TuneValue[] }
+  | { type: "catalog"; catalog: Catalog };
+
+/** A debug probe on SWD, or the firmware's framed link on a serial port */
+export type Carrier = "probe" | "serial";
 
 export interface ConnectRequest {
+  carrier: Carrier;
   probe: string | null;
   chip: string;
   speedKhz: number | null;
+  port: string | null;
   rateHz: number;
+}
+
+export interface PortInfo {
+  path: string;
+  product: string | null;
+  serial: string | null;
+  /** The port is a firmware tuning link */
+  telemetry: boolean;
+}
+
+export function listSerialPorts(): Promise<PortInfo[]> {
+  return invoke("list_serial_ports");
 }
 
 export function listProbes(): Promise<ProbeInfo[]> {
@@ -109,4 +127,9 @@ export function watchableLeaves(node: NodeRef): Promise<SymbolNode[]> {
 /** Ask the firmware to run tuning value `id` at `value`; rejects with the reason it was not written. */
 export function requestValue(id: number, value: number): Promise<void> {
   return invoke("session_request", { id, value });
+}
+
+/** Ask the firmware for every tunable's built-in default. */
+export function discardValues(): Promise<void> {
+  return invoke("session_discard");
 }

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Catalog, CatalogEntry } from "../elf/api";
 import { formatValue } from "./format";
-import { requestValue } from "./api";
+import { discardValues, requestValue } from "./api";
 import { Tune } from "./useSession";
 
 interface Props {
@@ -9,6 +9,8 @@ interface Props {
   catalogError: string | null;
   tune: Tune | null;
   connected: boolean;
+  /** The catalog came from the firmware itself, so there is no build to check */
+  fromTarget: boolean;
   /** Names of the values on the watch list */
   watched: Set<string>;
   onWatch: (entry: CatalogEntry) => void;
@@ -41,8 +43,10 @@ function range(entry: CatalogEntry) {
   return `${entry.min} to ${entry.max}${unit}`;
 }
 
-export function TunePanel({ catalog, catalogError, tune, connected, watched, onWatch }: Props) {
+export function TunePanel({ catalog, catalogError, tune, connected, fromTarget, watched, onWatch }: Props) {
   const grouped = useMemo(() => (catalog ? groups(catalog) : []), [catalog]);
+  const [resetting, setResetting] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
 
   if (!catalog) {
     return (
@@ -56,21 +60,51 @@ export function TunePanel({ catalog, catalogError, tune, connected, watched, onW
   const check = tune?.check ?? null;
   const canWrite = connected && check?.state === "matches";
 
+  async function resetAll() {
+    setResetting(true);
+    try {
+      await discardValues();
+      setResetError(null);
+    } catch (e) {
+      setResetError(String(e));
+    } finally {
+      setResetting(false);
+    }
+  }
+
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="border-b border-rule px-3 py-1.5 text-[12px]">
-        {!connected ? (
-          <span className="text-muted">Connect to read and change these values on the target.</span>
-        ) : check === null || check.state === "checking" ? (
-          <span className="text-muted">Checking that the target runs this build…</span>
-        ) : check.state === "differs" ? (
-          <span role="alert" className="text-danger">
-            {check.message}
-          </span>
-        ) : (
-          <span className="text-muted">Target runs this build. Press Enter to send a value.</span>
-        )}
+      <div className="flex items-center gap-2 border-b border-rule px-3 py-1.5 text-[12px]">
+        <span className="min-w-0 flex-1">
+          {!connected ? (
+            <span className="text-muted">Connect to read and change these values on the target.</span>
+          ) : check === null || check.state === "checking" ? (
+            <span className="text-muted">Checking that the target runs this build…</span>
+          ) : check.state === "differs" ? (
+            <span role="alert" className="text-danger">
+              {check.message}
+            </span>
+          ) : (
+            <span className="text-muted">
+              {fromTarget ? "Values listed by the firmware." : "Target runs this build."} Press Enter to send a value.
+            </span>
+          )}
+        </span>
+        <button
+          type="button"
+          disabled={!canWrite || resetting}
+          onClick={() => void resetAll()}
+          title="Request every value's built-in default"
+          className="shrink-0 rounded-sm border border-rule bg-panel px-2 py-0.5 hover:bg-sunken disabled:opacity-40"
+        >
+          Reset all
+        </button>
       </div>
+      {resetError && (
+        <p role="alert" className="border-b border-rule px-3 py-1 text-[12px] text-danger">
+          {resetError}
+        </p>
+      )}
       <div className="min-h-0 flex-1 overflow-auto">
         {grouped.map((group) => (
           <section key={group.name}>
@@ -105,7 +139,7 @@ interface RowProps {
 }
 
 function Row({ entry, value, canWrite, watched, onWatch }: RowProps) {
-  const live = entry.access === "live";
+  const live = entry.access !== "readOnly";
   const [draft, setDraft] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -195,6 +229,9 @@ function Row({ entry, value, canWrite, watched, onWatch }: RowProps) {
           </form>
         ) : (
           <span>read-only</span>
+        )}
+        {entry.access === "safeOnly" && (
+          <span title="The firmware refuses changes while the robot is armed">while disarmed</span>
         )}
         <span className="ml-auto truncate" title={entry.maxStep ? `At most ${entry.maxStep} per control tick` : undefined}>
           {range(entry)}

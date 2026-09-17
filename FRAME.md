@@ -113,16 +113,19 @@ same codec and enums from one source.
   the telemetry task `[rs]`.
 - **Policy on the MCU.** `Live`, `SafeOnly`, `KillOnly`, `ReadOnly`, checked
   against the robot's own state enum before any framed WRITE, with distinct
-  status codes `READ_ONLY`, `RANGE`, `STATE_DENIED`, `STEP_TOO_LARGE`,
-  `SESSION_REQUIRED`. The host greys buttons; the MCU refuses `[rs]`.
+  status codes `READ_ONLY`, `RANGE`, `STATE_DENIED`, `WRONG_KIND`,
+  `SESSION_REQUIRED`, `BUSY`, `BUDGET`. A step limit is not an error: the
+  owner slews toward the request. `KillOnly` is not implemented; `SafeOnly`
+  is, with "safe" supplied by the robot (disarmed). The host greys buttons;
+  the MCU refuses `[rs]`.
 - **Watch publishing.** A telemetry task with subscriptions: per-id requested
   Hz clamped to `max_hz`, a byte-rate budget with an explicit `BUDGET` error,
   batched SAMPLE frames with device timestamp and sequence number, drop
   counters in `GET_STATS`.
 - **Three-layer values.** Default (factory in code), Saved (flash A/B slot
   with generation + CRC16 + read-back verify), Current (session). SAVE,
-  DISCARD, RESET_FACTORY as explicit commands; session heartbeat timeout
-  rolls Current back to Saved `[rs]`. Storage backend is a trait the BSP
+  DISCARD, RESET_FACTORY as explicit commands. RM Studio rolls Current back
+  to Saved on heartbeat timeout `[rs]`; we do not (see section 9). Storage backend is a trait the BSP
   implements; the crate never owns a flash driver.
 - **RTT.** Replace `defmt_rtt` with `rtt-target` (`defmt` feature) and one
   `rtt_init!` per binary: up 0 `defmt` 1 KiB NoBlockSkip, up 1 `telemetry`
@@ -131,7 +134,9 @@ same codec and enums from one source.
   second stream. NoBlockSkip drops whole frames under host stall; the sequence
   number makes gaps visible.
 - **USB CDC.** Same frames on the CDC bulk endpoints; the carrier is chosen at
-  runtime by whichever link says HELLO first, or both.
+  runtime by whichever link says HELLO first, or both. DM-MC02 enumerates as
+  VID `0xc0de` PID `0xcafe`, product `rm-telemetry`; the host lists ports with
+  that product first.
 - **Printable encoding.** Optional, behind a feature: the same frames as one
   line of ASCII hex or a `key=value` form for a bare terminal. Not required
   for the stream split; RTT channels already separate console from data.
@@ -147,8 +152,22 @@ One magic for both planes; command ranges `0x0x` session, `0x1x` catalog and
 params, `0x2x` watch, `0x4x` async (SAMPLE, EVENT, LOG). CRC-16/MCRF4XX
 (table-free). Fixed 8-byte value slot with a type tag. Little-endian
 throughout. Paging: `offset u16, limit u8` in, `total u16, returned u8` out.
-Full tables are written when the crate is started; this section records the
-shape so the host and firmware do not drift.
+The codec lives in `rm_telemetry::wire` and its host mirror
+`studio_core::wire`; both test the same HELLO vector so they do not drift. A
+slot is tag u8, three reserved bytes, bits u32.
+
+| cmd | request | reply after status |
+|---|---|---|
+| `0x01` HELLO | — | wire version u8, table version u32, entries u16, fingerprint u32, max payload u16, lease ms u16 |
+| `0x02` LEASE | token u32 | — |
+| `0x03` RELEASE | token u32 | — |
+| `0x10` CATALOG | offset u16, limit u8 | total u16, returned u8, then per entry: id u32, kind u8, access u8, default u32, min/max/step f32, name and unit as u8 length + bytes |
+| `0x11` READ | count u8, ids u32 | count u8, then per id: id u32, requested u32, applied u32 |
+| `0x12` WRITE | token u32, id u32, slot | id u32, requested u32 |
+| `0x13` DISCARD | token u32 | values reset u16 |
+| `0x20` WATCH | period ms u16, count u8, ids u32 | watched u8 (count or period 0 stops) |
+| `0x22` STATS | — | sample frames sent u32, dropped u32, bad frames u32 |
+| `0x40` SAMPLE | unsolicited: device time u64 us, count u8, bits u32 each | — |
 
 ## 5. Host side
 
@@ -216,13 +235,18 @@ Each milestone ends in something usable on a real robot.
 | M1 | Probe session + `MemPollSource` on DWARF statics + defmt log on RTT up 0 | Plot a static counter from a stock `rm-embedded-rs` binary while the log scrolls, no firmware change |
 | M2 | `rm-telemetry` descriptor crate; firmware converts a few gimbal PID gains and state values; host reads the table over SWD; tune panel writes cells | Tune pitch `kp` live over SWD and see the response on the scope |
 | M3 | Framed protocol over RTT up 1 / down 0 and USB CDC; `TelemetrySource`; session lease, policy, SAVE/DISCARD, A/B storage | Same tune session works over the Type-C cable with no probe, and a value survives a power cycle |
+| M3a | Done: framed protocol over USB CDC, lease, policy, DISCARD, link session in the app with no ELF | Tune over the Type-C cable with no probe |
+| M3b | Deferred: SAVE with A/B flash storage (an erase must not stall the watchdog or control loop), framed protocol over RTT | A value survives a power cycle |
 | M4 | Recorder, FFT, profiles, layouts, packaging for macOS and Windows | A teammate installs a release and tunes without reading source |
 | M5 | Printable encoding, WebSocket carrier for the simulator, OpenOCD fallback | Optional, only if pulled |
 
 ## 9. Decisions with a recommendation
 
 - **Leases.** One session covering both planes. RM Studio's two-lease
-  isolation `[rs]` buys little once frames carry a sequence number.
+  isolation `[rs]` buys little once frames carry a sequence number. Settled in
+  M3: a lapsed lease does not roll requests back. With no flash there is
+  nothing to return to but defaults, and a cable pulled mid-tune should not
+  change gains under a running robot. DISCARD is the explicit reset.
 - **Descriptor collection.** Settled in M2: one hand-listed `Table` static.
   `linkme` needs `unsafe` link sections, which `#![forbid(unsafe_code)]` in
   the robot crates rules out, and one list per firmware is short enough to
