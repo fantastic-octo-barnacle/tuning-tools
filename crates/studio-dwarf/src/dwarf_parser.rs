@@ -14,7 +14,7 @@
 
 use super::type_table::{
     BaseClassDef, DwarfTypeKey, EnumDef, EnumVariant, ForwardDeclKind, GlobalTypeKey, MemberDef,
-    PrimitiveDef, StructDef, TemplateParam, TypeDef, TypeId, TypeTable,
+    PrimitiveDef, StructDef, TemplateParam, TypeDef, TypeId, TypeTable, VariantDef, VariantPart,
 };
 use gimli::{
     AttributeValue, DebuggingInformationEntry, Dwarf, EndianSlice, ReaderOffset, RunTimeEndian,
@@ -214,6 +214,8 @@ pub struct DwarfParser<'a, R: gimli::Reader> {
     variable_cache: std::collections::HashMap<usize, VariableInfo>,
     /// Variables needing deferred resolution (spec/origin DIE appeared before target)
     deferred_variables: Vec<DeferredVariable>,
+    /// Whether the compile unit being walked is Rust (`DW_LANG_Rust`)
+    unit_is_rust: bool,
 }
 
 /// Cached information about a variable (for abstract_origin/specification resolution)
@@ -301,6 +303,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
             pending_symbols: Vec::new(),
             variable_cache: std::collections::HashMap::new(),
             deferred_variables: Vec::new(),
+            unit_is_rust: false,
         };
 
         parser.parse_all_units()?;
@@ -331,6 +334,15 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
 
     /// Parse a single compilation unit
     fn parse_unit(&mut self, unit: &Unit<Reader<'a>>, unit_index: usize) -> Result<(), String> {
+        self.unit_is_rust = unit
+            .entries_tree(None)
+            .ok()
+            .and_then(|mut tree| {
+                let root = tree.root().ok()?;
+                root.entry().attr_value(gimli::DW_AT_language).ok()?
+            })
+            .is_some_and(|v| matches!(v, AttributeValue::Language(gimli::DW_LANG_Rust)));
+
         let mut entries = unit.entries();
 
         while let Some((_, entry)) = entries
@@ -419,10 +431,28 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
             // Variable/symbol DIEs
             gimli::DW_TAG_variable => {
                 self.parse_variable(unit, unit_index, key, entry);
+                return Ok(());
             }
 
             _ => {
                 // Ignore other tags
+                return Ok(());
+            }
+        }
+
+        // Every arm that reaches here defined a type under `key`
+        if self.unit_is_rust {
+            if let Some(id) = self.type_table.get_by_dwarf_key(key) {
+                self.type_table.mark_rust(id);
+                // rustc names base and pointer types (`u16`, `&mut T`, `fn() -> !`)
+                if matches!(
+                    entry.tag(),
+                    gimli::DW_TAG_base_type | gimli::DW_TAG_pointer_type
+                ) {
+                    if let Some(name) = self.get_name(unit, entry) {
+                        self.type_table.set_source_name(id, name);
+                    }
+                }
             }
         }
 
@@ -701,6 +731,10 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
                                 struct_def.template_params.push(param);
                             }
                         }
+                        gimli::DW_TAG_variant_part => {
+                            struct_def.variant_part =
+                                Some(self.parse_variant_part(unit, unit_index, child));
+                        }
                         _ => {}
                     }
                 }
@@ -714,6 +748,67 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
         };
 
         self.type_table.define(struct_id, def);
+    }
+
+    /// Parse a Rust enum's DW_TAG_variant_part: one discriminant member plus
+    /// DW_TAG_variant children, each holding a single member for its payload.
+    fn parse_variant_part(
+        &mut self,
+        unit: &Unit<Reader<'a>>,
+        unit_index: usize,
+        node: gimli::EntriesTreeNode<Reader<'a>>,
+    ) -> VariantPart {
+        let discr_ref = match node.entry().attr_value(gimli::DW_AT_discr) {
+            Ok(Some(AttributeValue::UnitRef(offset))) => Some(offset),
+            _ => None,
+        };
+
+        let mut part = VariantPart::default();
+        let mut members: Vec<(UnitOffset, MemberDef)> = Vec::new();
+        let mut children = node.children();
+        while let Ok(Some(child)) = children.next() {
+            let entry = child.entry();
+            match entry.tag() {
+                gimli::DW_TAG_member => {
+                    let offset = entry.offset();
+                    if let Some(member) = self.parse_member(unit, unit_index, entry) {
+                        members.push((offset, member));
+                    }
+                }
+                gimli::DW_TAG_variant => {
+                    let discr_value = entry
+                        .attr_value(gimli::DW_AT_discr_value)
+                        .ok()
+                        .flatten()
+                        .and_then(|v| {
+                            v.udata_value()
+                                .or_else(|| v.sdata_value().map(|s| s as u64))
+                        });
+                    let mut grandchildren = child.children();
+                    while let Ok(Some(gc)) = grandchildren.next() {
+                        if gc.entry().tag() == gimli::DW_TAG_member {
+                            if let Some(member) = self.parse_member(unit, unit_index, gc.entry()) {
+                                part.variants.push(VariantDef {
+                                    discr_value,
+                                    member,
+                                });
+                            }
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        part.discriminant = match discr_ref {
+            Some(target) => members
+                .into_iter()
+                .find(|(o, _)| *o == target)
+                .map(|(_, m)| m),
+            None => members.into_iter().next().map(|(_, m)| m),
+        };
+        part
     }
 
     /// Parse DW_TAG_member

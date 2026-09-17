@@ -50,3 +50,29 @@ The fixtures use a simple linker script (`link.ld`) that places:
 - `.bss` at 0x20001000 (RAM)
 
 This matches typical STM32 memory layouts for testing.
+
+## Rust fixtures
+
+### rust_v0.elf, rust_legacy.elf
+The same firmware-shaped program (`rust_embedded/`) built for
+`thumbv7em-none-eabihf` with the rm-embedded-rs release profile (thin LTO,
+`opt-level = "s"`, 8 codegen units, full debug info). Statics are mangled and
+live in nested modules: atomics, a `[u16; 8]`, a `u64`, and a
+`Shared<Gimbal<4>>` holding a fieldless enum, `Option<f32>`, a data-carrying
+enum, a niche-encoded `Option<NonZeroU32>`, an array and a tuple.
+
+`rust_v0.elf` uses the default v0 mangling (`_R...`); `rust_legacy.elf` uses
+legacy mangling (`_ZN...17h<hash>E`), which stable rustc only allows behind
+`-Z unstable-options`.
+
+```bash
+cd tests/fixtures/rust_embedded
+cargo build --release
+cp target/thumbv7em-none-eabihf/release/rust_fixture ../rust_v0.elf
+RUSTC_BOOTSTRAP=1 RUSTFLAGS="-C link-arg=-Tlink.x -Z unstable-options -C symbol-mangling-version=legacy" \
+  cargo build --release --target-dir target-legacy
+cp target-legacy/thumbv7em-none-eabihf/release/rust_fixture ../rust_legacy.elf
+```
+
+Built with rustc 1.98.1. Type names such as `Atomic<u32>` follow the core
+library of that toolchain; rebuilding with another toolchain may change them.

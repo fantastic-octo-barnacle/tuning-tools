@@ -9,7 +9,7 @@
 //! The TypeHandle struct wraps `Arc<TypeTable>` + TypeId for zero-overhead type access.
 
 use crate::variable_type::VariableType;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// A unique identifier for a type in the global type table.
@@ -321,6 +321,8 @@ pub struct StructDef {
     pub template_params: Vec<TemplateParam>,
     /// Base classes for C++ inheritance
     pub base_classes: Vec<BaseClassDef>,
+    /// Rust enum layout (`DW_TAG_variant_part`); `members` is empty when set
+    pub variant_part: Option<VariantPart>,
 }
 
 impl StructDef {
@@ -332,13 +334,20 @@ impl StructDef {
             is_class,
             template_params: Vec::new(),
             base_classes: Vec::new(),
+            variant_part: None,
         }
+    }
+
+    /// Get the name as the compiler wrote it
+    pub fn display_name_without_params(&self) -> String {
+        self.name.as_deref().unwrap_or("<anonymous>").to_string()
     }
 
     /// Get the display name including template parameters
     pub fn display_name(&self) -> String {
         let base_name = self.name.as_deref().unwrap_or("<anonymous>");
-        if self.template_params.is_empty() {
+        // rustc and GCC already spell the arguments into the name (`Atomic<u32>`)
+        if self.template_params.is_empty() || base_name.contains('<') {
             base_name.to_string()
         } else {
             let params: Vec<String> = self.template_params.iter().map(|p| p.display()).collect();
@@ -372,6 +381,35 @@ impl MemberDef {
     pub fn is_bitfield(&self) -> bool {
         self.bit_size.is_some()
     }
+}
+
+/// Layout of a Rust enum with data, from `DW_TAG_variant_part`.
+///
+/// Read the `discriminant` member's raw bits and pass them to [`VariantPart::select`]
+/// to find the active variant. For niche-encoded enums the discriminant lives inside
+/// another variant's payload and the untagged (dataful) variant has no `discr_value`.
+#[derive(Debug, Clone, Default)]
+pub struct VariantPart {
+    /// The tag member (offset/type within the enum). `None` for single-variant enums.
+    pub discriminant: Option<MemberDef>,
+    pub variants: Vec<VariantDef>,
+}
+
+impl VariantPart {
+    /// Active variant for a raw discriminant value: exact match, else the default variant.
+    pub fn select(&self, discr: u64) -> Option<&VariantDef> {
+        self.variants
+            .iter()
+            .find(|v| v.discr_value == Some(discr))
+            .or_else(|| self.variants.iter().find(|v| v.discr_value.is_none()))
+    }
+}
+
+/// One enum variant; `member` is named after the variant and typed as its payload struct.
+#[derive(Debug, Clone)]
+pub struct VariantDef {
+    pub discr_value: Option<u64>,
+    pub member: MemberDef,
 }
 
 /// Base class for C++ inheritance
@@ -459,6 +497,11 @@ pub struct TypeTable {
     name_to_id: HashMap<String, Vec<TypeId>>,
     /// Pending forward declarations that need resolution
     pending_forward_decls: Vec<TypeId>,
+    /// Types declared in Rust compile units; named with Rust syntax
+    rust_types: HashSet<TypeId>,
+    /// Compiler-provided names that the structural name cannot reproduce
+    /// (Rust `u16`, `&mut T`, `fn() -> !`)
+    source_names: HashMap<TypeId, String>,
 }
 
 impl Default for TypeTable {
@@ -475,7 +518,24 @@ impl TypeTable {
             dwarf_to_id: HashMap::new(),
             name_to_id: HashMap::new(),
             pending_forward_decls: Vec::new(),
+            rust_types: HashSet::new(),
+            source_names: HashMap::new(),
         }
+    }
+
+    /// Mark a type as coming from a Rust compile unit
+    pub fn mark_rust(&mut self, id: TypeId) {
+        self.rust_types.insert(id);
+    }
+
+    /// Whether a type was declared in a Rust compile unit
+    pub fn is_rust(&self, id: TypeId) -> bool {
+        self.rust_types.contains(&id)
+    }
+
+    /// Record the compiler's own spelling of a type name
+    pub fn set_source_name(&mut self, id: TypeId, name: String) {
+        self.source_names.insert(id, name);
     }
 
     /// Get the number of types in the table
@@ -692,6 +752,14 @@ impl TypeTable {
         }
 
         let resolved_id = self.resolve(id);
+        if let Some(name) = self.source_names.get(&resolved_id) {
+            return name.clone();
+        }
+        if self.is_rust(resolved_id) {
+            if let Some(name) = self.rust_type_name(resolved_id, depth) {
+                return name;
+            }
+        }
         match self.get(resolved_id) {
             None => format!("<invalid:{}>", id.0),
             Some(def) => match def {
@@ -748,6 +816,27 @@ impl TypeTable {
         }
     }
 
+    /// Rust spellings for the structural types that differ from C
+    fn rust_type_name(&self, id: TypeId, depth: usize) -> Option<String> {
+        Some(match self.get(id)? {
+            TypeDef::Array { element, count } => {
+                let elem = self.type_name_with_depth(*element, depth + 1);
+                match count {
+                    Some(n) => format!("[{elem}; {n}]"),
+                    None => format!("[{elem}]"),
+                }
+            }
+            TypeDef::Pointer(inner) => {
+                format!("*const {}", self.type_name_with_depth(*inner, depth + 1))
+            }
+            // rustc spells concrete arguments into the name; template params are
+            // inherited by variant payload structs and would print `Some<T>`
+            TypeDef::Struct(s) | TypeDef::Union(s) => s.display_name_without_params(),
+            TypeDef::Void => "()".to_string(),
+            _ => return None,
+        })
+    }
+
     /// Check if a type is expandable (has members that can be displayed)
     pub fn is_expandable(&self, id: TypeId) -> bool {
         self.is_expandable_with_depth(id, 0)
@@ -762,7 +851,12 @@ impl TypeTable {
         match self.get(resolved_id) {
             None => false,
             Some(def) => match def {
-                TypeDef::Struct(s) | TypeDef::Union(s) => !s.members.is_empty(),
+                TypeDef::Struct(s) | TypeDef::Union(s) => {
+                    !s.members.is_empty()
+                        || s.variant_part
+                            .as_ref()
+                            .is_some_and(|v| !v.variants.is_empty())
+                }
                 // Arrays are expandable if they have a known count > 0
                 TypeDef::Array { count, .. } => count.map(|c| c > 0).unwrap_or(false),
                 // Pointers/references are expandable if they point to an expandable type

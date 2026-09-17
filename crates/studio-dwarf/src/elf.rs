@@ -16,7 +16,6 @@ use crate::type_table::{MemberDef, SharedTypeTable, TypeHandle, TypeId, TypeTabl
 use crate::variable_type::VariableType;
 use cpp_demangle::Symbol as CppSymbol;
 use object::{Object, ObjectSection, ObjectSymbol, SymbolKind};
-use rustc_demangle::demangle as rust_demangle;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -344,22 +343,23 @@ impl ElfInfo {
     }
 }
 
-/// Demangle a symbol name (supports C++ and Rust mangling)
+/// Demangle a symbol name (Rust v0 and legacy, then C++).
+///
+/// Rust goes first: legacy Rust symbols (`_ZN...17h<hash>E`) are also valid Itanium
+/// names, and the C++ demangler would keep the `::h<hash>` segment. Rust output uses
+/// the alternate form, which drops the crate disambiguator (`foo[1a2b...]`) and the
+/// legacy hash, so the path stays stable across rebuilds.
 pub fn demangle_symbol(mangled: &str) -> String {
-    // Try C++ demangling first
+    if let Ok(demangled) = rustc_demangle::try_demangle(mangled) {
+        return format!("{demangled:#}");
+    }
+
     if let Ok(symbol) = CppSymbol::new(mangled) {
         if let Ok(demangled) = symbol.demangle(&cpp_demangle::DemangleOptions::default()) {
             return demangled;
         }
     }
 
-    // Try Rust demangling
-    let demangled = rust_demangle(mangled).to_string();
-    if demangled != mangled {
-        return demangled;
-    }
-
-    // Return original if no demangling succeeded
     mangled.to_string()
 }
 
@@ -393,6 +393,12 @@ fn is_mapping_symbol(name: &str) -> bool {
     };
     let kind = rest.split('.').next().unwrap_or("");
     matches!(kind, "a" | "t" | "d" | "x")
+}
+
+/// rustc/LLVM anonymous allocations (`.Lanon.<hash>.<n>`, `anon.<hash>.<n>.llvm.<n>`):
+/// string literals, vtables and promoted constants in flash, never watch targets.
+fn is_anonymous_constant(name: &str) -> bool {
+    name.strip_prefix(".L").unwrap_or(name).starts_with("anon.")
 }
 
 /// Remove nested delimiters from a string
@@ -628,7 +634,7 @@ impl ElfParser {
     /// Parse a single symbol from the symbol table
     fn parse_symbol(symbol: &object::Symbol, file: &object::File) -> Option<SymbolInfo> {
         let name = symbol.name().ok()?;
-        if name.is_empty() || is_mapping_symbol(name) {
+        if name.is_empty() || is_mapping_symbol(name) || is_anonymous_constant(name) {
             return None;
         }
 
@@ -742,10 +748,24 @@ mod tests {
     #[test]
     fn demangle_handles_cpp_rust_and_plain() {
         assert_eq!(demangle_symbol("_ZN3foo3barE"), "foo::bar");
+        // Legacy Rust: hash segment dropped
         assert_eq!(
             demangle_symbol("_ZN4core3fmt5write17h0123456789abcdefE"),
-            "core::fmt::write::h0123456789abcdef"
+            "core::fmt::write"
         );
+        // Rust v0: crate disambiguator dropped
+        assert_eq!(
+            demangle_symbol("_RNvNtCs54eYuXc1AiR_24balance_infantry_chassis9transport3IMU"),
+            "balance_infantry_chassis::transport::IMU"
+        );
+        // LLVM ThinLTO suffix is not part of the path
+        assert_eq!(
+            demangle_symbol(
+                "_RNvNtCs4WTe2uLtwMp_13embassy_stm323rcc11CLOCK_FREQS.llvm.13985685041032945125"
+            ),
+            "embassy_stm32::rcc::CLOCK_FREQS"
+        );
+        assert_eq!(demangle_symbol("_ZN3foo3barEi"), "foo::bar(int)");
         assert_eq!(demangle_symbol("global_counter"), "global_counter");
         assert_eq!(extract_short_name("ns::Class<int>::get(int)"), "get");
     }
@@ -756,6 +776,13 @@ mod tests {
         assert!(is_mapping_symbol("$t.1"));
         assert!(!is_mapping_symbol("$dollar"));
         assert!(!is_mapping_symbol("d"));
+        assert!(is_anonymous_constant(
+            ".Lanon.10c5378abbece42ad2b99191221dc5f8.1"
+        ));
+        assert!(is_anonymous_constant(
+            "anon.4f546bd6774f14d22f661135736587c5.1.llvm.17422244049030701297"
+        ));
+        assert!(!is_anonymous_constant("anonymous_counter"));
         let elf = ElfParser::parse_bytes(TEST_ARM_ELF, "test_arm.elf").unwrap();
         assert!(elf.symbols.iter().all(|s| !s.mangled_name.starts_with('$')));
     }
