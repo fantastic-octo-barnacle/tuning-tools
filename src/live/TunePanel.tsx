@@ -104,17 +104,15 @@ export function TunePanel({ catalog, catalogError, tune, connected, fromTarget, 
         >
           Reset all
         </button>
-        {fromTarget && (
-          <button
-            type="button"
-            disabled={!canWrite || busy !== null}
-            onClick={() => void run("save")}
-            title="Store the requested values on the robot so they survive a power cycle"
-            className="shrink-0 rounded-sm border border-led bg-led-wash px-2 py-0.5 hover:brightness-95 disabled:opacity-40"
-          >
-            {busy === "save" ? "Saving…" : "Save to robot"}
-          </button>
-        )}
+        <button
+          type="button"
+          disabled={!canWrite || busy !== null}
+          onClick={() => void run("save")}
+          title="Store the requested values on the robot so they survive a power cycle"
+          className="shrink-0 rounded-sm border border-led bg-led-wash px-2 py-0.5 hover:brightness-95 disabled:opacity-40"
+        >
+          {busy === "save" ? "Saving…" : "Save to robot"}
+        </button>
       </div>
       {notice && (
         <p

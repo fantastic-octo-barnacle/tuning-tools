@@ -110,6 +110,16 @@ impl Tuner {
         Ok(())
     }
 
+    /// Entry `id`'s type tag and the bits that request `value`, for a request
+    /// the firmware checks itself.
+    pub fn encode(&self, id: u32, value: f64) -> Result<(u8, u32), String> {
+        let entry = self
+            .catalog
+            .entry(id)
+            .ok_or_else(|| format!("no value with id {id:#010x} in this build"))?;
+        Ok((entry.kind.tag(), entry.request_bits(value)?))
+    }
+
     /// Write a request for `value` into the cell of entry `id`.
     pub fn request(
         &mut self,

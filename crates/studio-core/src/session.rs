@@ -15,6 +15,7 @@ use crate::catalog::{Catalog, TableLayout};
 use crate::frame::FrameBuilder;
 use crate::log::{LogDecoder, LogLine};
 use crate::plan::{ReadItem, ReadPlan};
+use crate::rtt_tuning::{FramedRequest, RttTuning};
 use crate::schedule::{sleep_until, Ticker};
 use crate::stats::{LinkStats, StatsSnapshot};
 use crate::tune::{CatalogCheck, TuneValue, Tuner};
@@ -40,6 +41,7 @@ type PendingRequest = (TuneRequest, RequestReply);
 enum TuneRequest {
     Set { id: u32, value: f64 },
     Discard,
+    Save,
 }
 
 pub enum SessionCommand {
@@ -58,7 +60,7 @@ pub enum SessionCommand {
         reply: RequestReply,
     },
     /// Ask the firmware to store every current request so it survives a
-    /// power cycle; needs a framed link
+    /// power cycle; needs a framed link or a firmware serving one over RTT
     Save {
         reply: RequestReply,
     },
@@ -118,7 +120,8 @@ pub struct SessionOptions {
     pub rate_hz: f64,
     /// ELF bytes for the defmt table; `None` disables log decoding
     pub elf: Option<Vec<u8>>,
-    /// RTT control block (`_SEGGER_RTT`); the log is read from its up channel 0
+    /// RTT control block (`_SEGGER_RTT`); the log is read from its up channel
+    /// 0, and tuning requests go through its control channels when it has them
     pub rtt_address: Option<u64>,
 }
 
@@ -211,6 +214,7 @@ struct Worker {
     tuner: Option<Tuner>,
     tune_tick: Ticker,
     requests: Vec<PendingRequest>,
+    framed: Option<RttTuning>,
 }
 
 impl Worker {
@@ -232,6 +236,7 @@ impl Worker {
             .as_ref()
             .and(options.rtt_address)
             .map(RttReader::new);
+        let framed = options.rtt_address.map(RttTuning::new);
         Self {
             sink,
             start,
@@ -254,6 +259,7 @@ impl Worker {
             tuner: None,
             tune_tick: Ticker::new(start, TUNE_PERIOD),
             requests: Vec::new(),
+            framed,
         }
     }
 
@@ -294,6 +300,9 @@ impl Worker {
             }
         };
 
+        if let Some(framed) = &mut self.framed {
+            framed.close(None);
+        }
         self.flush_frame();
         self.sink.event(SessionEvent::Status {
             state: if failure.is_some() {
@@ -328,9 +337,12 @@ impl Worker {
             // 15.6 ms system tick on Windows, which would cap sampling near 64 Hz
             sleep_until(next);
             if self.drain_commands(rx) {
+                if let Some(framed) = &mut self.framed {
+                    framed.close(Some(memory));
+                }
                 return Exit::Stop;
             }
-            let wrote = self.serve_requests(memory);
+            let mut wrote = self.serve_requests(memory);
 
             let now = Instant::now();
             if self.sampler.as_mut().is_some_and(|s| s.poll(now)) {
@@ -346,6 +358,14 @@ impl Worker {
             }
             if self.log_tick.poll(now) {
                 self.pump_log(memory, now);
+                if let Some(framed) = &mut self.framed {
+                    framed.attach(memory, now);
+                    let (finished, error) = framed.poll(memory, now);
+                    wrote |= finished;
+                    if error.is_some() {
+                        self.last_error = error;
+                    }
+                }
             }
             if self.frame_tick.poll(now) {
                 self.flush_frame();
@@ -388,11 +408,7 @@ impl Worker {
                 self.requests.push((TuneRequest::Set { id, value }, reply))
             }
             SessionCommand::Discard { reply } => self.requests.push((TuneRequest::Discard, reply)),
-            SessionCommand::Save { reply } => {
-                let _ = reply.send(Err(
-                    "saving goes through the firmware; connect over USB to save".into(),
-                ));
-            }
+            SessionCommand::Save { reply } => self.requests.push((TuneRequest::Save, reply)),
             SessionCommand::SetCellWatches(_) => {}
             SessionCommand::Stop => {}
         }
@@ -472,23 +488,49 @@ impl Worker {
         }
     }
 
-    /// Write queued requests; `true` when any was attempted.
+    /// Send queued requests; `true` when any was attempted. They go to the
+    /// firmware over RTT when it serves requests there, and are written into
+    /// the table's cells otherwise.
     fn serve_requests(&mut self, memory: &mut dyn MemoryAccess) -> bool {
         if self.requests.is_empty() {
             return false;
         }
+        let now = Instant::now();
+        let mut framed = self
+            .framed
+            .as_mut()
+            .and_then(|framed| framed.attach(memory, now).then_some(framed));
         for (request, reply) in std::mem::take(&mut self.requests) {
-            let result = match &mut self.tuner {
-                Some(tuner) => {
-                    if let Some(e) = tuner.verify(memory) {
-                        self.last_error = Some(e);
-                    }
-                    match request {
-                        TuneRequest::Set { id, value } => tuner.request(memory, id, value),
-                        TuneRequest::Discard => tuner.discard(memory),
+            let Some(tuner) = &mut self.tuner else {
+                let _ = reply.send(Err("the open ELF declares no tuning table".into()));
+                continue;
+            };
+            if let Some(framed) = framed.as_deref_mut() {
+                let framed_request = match request {
+                    TuneRequest::Set { id, value } => tuner
+                        .encode(id, value)
+                        .map(|(tag, bits)| FramedRequest::Write { id, tag, bits }),
+                    TuneRequest::Discard => Ok(FramedRequest::Discard),
+                    TuneRequest::Save => Ok(FramedRequest::Save),
+                };
+                match framed_request {
+                    Ok(r) => framed.submit(memory, now, r, reply),
+                    Err(e) => {
+                        let _ = reply.send(Err(e));
                     }
                 }
-                None => Err("the open ELF declares no tuning table".into()),
+                continue;
+            }
+            if let Some(e) = tuner.verify(memory) {
+                self.last_error = Some(e);
+            }
+            let result = match request {
+                TuneRequest::Set { id, value } => tuner.request(memory, id, value),
+                TuneRequest::Discard => tuner.discard(memory),
+                TuneRequest::Save => Err(
+                    "this firmware takes no requests over RTT, so it cannot save from a probe; connect over USB to save"
+                        .into(),
+                ),
             };
             let _ = reply.send(result);
         }

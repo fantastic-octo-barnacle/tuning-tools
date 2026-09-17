@@ -3,10 +3,11 @@
 //! ```text
 //! cargo run -p studio-core --example watch -- --chip STM32H723VG --elf <firmware> \
 //!     [--probe VID:PID[:SERIAL]] [--speed 4000] [--rate 200] [--secs 5] [--list] \
-//!     [--tune <table value name>=<value>] <symbol path>...
+//!     [--tune <table value name>=<value> [--save]] <symbol path>...
 //! ```
 //! `--list` prints RAM statics with numeric types instead of sampling.
 //! `--tune` requests a tuning table value after one second and prints it each second.
+//! `--save` then asks the firmware to store it, which needs its RTT control channel.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -60,7 +61,7 @@ impl SessionSink for Print {
 fn main() {
     let mut args = std::env::args().skip(1);
     let (mut chip, mut elf_path, mut probe, mut speed) = (None, None, None, None);
-    let (mut rate, mut secs, mut list) = (200.0, 5u64, false);
+    let (mut rate, mut secs, mut list, mut save) = (200.0, 5u64, false, false);
     let mut symbols = Vec::new();
     let mut tune = None;
     while let Some(a) = args.next() {
@@ -73,6 +74,7 @@ fn main() {
             "--secs" => secs = args.next().unwrap().parse().unwrap(),
             "--list" => list = true,
             "--tune" => tune = args.next(),
+            "--save" => save = true,
             _ => symbols.push(a),
         }
     }
@@ -161,6 +163,11 @@ fn main() {
                 reply,
             });
             println!("request {} = {value}: {:?}", entry.name, rx.recv().unwrap());
+        }
+        if sec == 2 && save {
+            let (reply, rx) = std::sync::mpsc::sync_channel(1);
+            session.send(SessionCommand::Save { reply });
+            println!("save: {:?}", rx.recv().unwrap());
         }
         if let (Some((entry, _)), Some(SessionEvent::Tune { check, values })) =
             (&tune, sink.tune.lock().unwrap().as_ref())

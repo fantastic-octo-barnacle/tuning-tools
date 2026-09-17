@@ -26,8 +26,12 @@ The same Tune tab works over the robot's Type-C cable with no probe and no
 ELF: pick USB, and the app speaks the `rm-telemetry` framed protocol, takes
 the firmware's tuning lease, lists the table the firmware reports, writes
 requests, resets them to defaults, saves them to the robot's flash so they
-survive a power cycle, and plots watched values the firmware streams. The
-framed protocol over RTT is not done yet.
+survive a power cycle, and plots watched values the firmware streams.
+
+Over the probe, a firmware that also serves the protocol on its RTT `control`
+and `telemetry` channels gets tuning requests and saves the same way; values
+are still sampled from memory. Firmware without those channels is tuned by
+writing its table cells directly and cannot save from a probe.
 
 ## Develop
 

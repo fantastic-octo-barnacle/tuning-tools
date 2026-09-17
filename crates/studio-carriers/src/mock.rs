@@ -12,7 +12,7 @@ struct Inner {
     /// Reads touching `[start, end)` fail
     faults: Vec<(u64, u64)>,
     reads: u64,
-    /// Control block address and ring size, once [`MockLink::init_rtt`] ran
+    /// Control block address and up channel count, once [`MockLink::init_rtt`] ran
     rtt: Option<(u64, u32)>,
 }
 
@@ -51,29 +51,44 @@ impl MockLink {
             .collect()
     }
 
-    /// Lay out an RTT control block at `address` with one up channel of `size` bytes,
-    /// its name and ring placed right after the block.
+    /// An RTT control block with one up channel, as a defmt-only firmware has.
     pub fn init_rtt(&self, address: u64, name: &str, size: u32) {
+        self.init_rtt_channels(address, &[(name, size)], &[]);
+    }
+
+    /// An RTT control block with the given `(name, size)` up and down channels.
+    pub fn init_rtt_channels(&self, address: u64, up: &[(&str, u32)], down: &[(&str, u32)]) {
         let mut inner = self.0.lock().unwrap();
-        let name_at = address + 0x100;
-        let buffer_at = address + 0x200;
-        let mut name_bytes = name.as_bytes().to_vec();
-        name_bytes.push(0);
-        inner.poke(name_at, &name_bytes);
         let mut block = b"SEGGER RTT\0\0\0\0\0\0".to_vec();
-        for word in [1, 0, name_at as u32, buffer_at as u32, size, 0, 0, 0] {
-            block.extend_from_slice(&u32::to_le_bytes(word));
+        block.extend_from_slice(&(up.len() as u32).to_le_bytes());
+        block.extend_from_slice(&(down.len() as u32).to_le_bytes());
+        let mut buffer_at = address + 0x1000;
+        for (i, (name, size)) in up.iter().chain(down).enumerate() {
+            let name_at = address + 0x800 + 0x20 * i as u64;
+            let mut name_bytes = name.as_bytes().to_vec();
+            name_bytes.push(0);
+            inner.poke(name_at, &name_bytes);
+            for word in [name_at as u32, buffer_at as u32, *size, 0, 0, 0] {
+                block.extend_from_slice(&word.to_le_bytes());
+            }
+            buffer_at += u64::from(*size) + 0x100;
         }
         inner.poke(address, &block);
-        inner.rtt = Some((address, size));
+        inner.rtt = Some((address, up.len() as u32));
     }
 
     /// Append to RTT up channel 0 as the firmware would; bytes beyond free space are dropped.
     pub fn push_log(&self, bytes: &[u8]) {
+        self.push_up(0, bytes);
+    }
+
+    /// Append to RTT up channel `index`; bytes beyond free space are dropped.
+    pub fn push_up(&self, index: u32, bytes: &[u8]) {
         let mut inner = self.0.lock().unwrap();
-        let (block, size) = inner.rtt.expect("init_rtt first");
-        let descriptor = block + 24;
+        let (block, _) = inner.rtt.expect("init_rtt first");
+        let descriptor = block + 24 + 24 * u64::from(index);
         let buffer = inner.word(descriptor + 4) as u64;
+        let size = inner.word(descriptor + 8);
         let mut write = inner.word(descriptor + 12);
         let read = inner.word(descriptor + 16);
         for &b in bytes {
@@ -85,6 +100,30 @@ impl MockLink {
             write = next;
         }
         inner.poke(descriptor + 12, &write.to_le_bytes());
+    }
+
+    /// Consume everything the host wrote to RTT down channel `index`.
+    pub fn take_down(&self, index: u32) -> Vec<u8> {
+        let mut inner = self.0.lock().unwrap();
+        let (block, up) = inner.rtt.expect("init_rtt first");
+        let descriptor = block + 24 + 24 * u64::from(up + index);
+        let buffer = inner.word(descriptor + 4) as u64;
+        let size = inner.word(descriptor + 8);
+        let write = inner.word(descriptor + 12);
+        let mut read = inner.word(descriptor + 16);
+        let mut out = Vec::new();
+        while read != write {
+            out.push(
+                inner
+                    .ram
+                    .get(&(buffer + u64::from(read)))
+                    .copied()
+                    .unwrap_or(0),
+            );
+            read = (read + 1) % size;
+        }
+        inner.poke(descriptor + 16, &read.to_le_bytes());
+        out
     }
 
     pub fn fail_reads(&self, start: u64, end: u64) {

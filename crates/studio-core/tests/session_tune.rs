@@ -1,5 +1,6 @@
 //! Tuning through a session: the mock target holds the fixture firmware's image.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -7,8 +8,9 @@ use std::time::{Duration, Instant};
 use studio_carriers::mock::MockLink;
 use studio_carriers::Link;
 use studio_core::catalog::{Catalog, ElfImage, TableLayout};
-use studio_core::session::SessionOptions;
+use studio_core::session::{RequestReply, SessionOptions};
 use studio_core::tune::CatalogCheck;
+use studio_core::wire::{self, cmd, Decoder};
 use studio_core::{Session, SessionCommand, SessionEvent, SessionSink};
 use studio_dwarf::ElfParser;
 
@@ -60,6 +62,15 @@ fn fixture() -> (TableLayout, Catalog, MockLink) {
 }
 
 fn start(mock: &MockLink, layout: TableLayout, catalog: Catalog) -> (Session, Arc<Collect>) {
+    start_with(mock, layout, catalog, None)
+}
+
+fn start_with(
+    mock: &MockLink,
+    layout: TableLayout,
+    catalog: Catalog,
+    rtt_address: Option<u64>,
+) -> (Session, Arc<Collect>) {
     let sink = Arc::new(Collect::default());
     let link = mock.clone();
     let session = Session::spawn(
@@ -67,7 +78,7 @@ fn start(mock: &MockLink, layout: TableLayout, catalog: Catalog) -> (Session, Ar
         SessionOptions {
             rate_hz: 100.0,
             elf: None,
-            rtt_address: None,
+            rtt_address,
         },
         sink.clone(),
     );
@@ -78,9 +89,52 @@ fn start(mock: &MockLink, layout: TableLayout, catalog: Catalog) -> (Session, Ar
 }
 
 fn request(session: &Session, id: u32, value: f64) -> Result<(), String> {
+    call(session, |reply| SessionCommand::Request {
+        id,
+        value,
+        reply,
+    })
+}
+
+fn call(
+    session: &Session,
+    command: impl FnOnce(RequestReply) -> SessionCommand,
+) -> Result<(), String> {
     let (reply, rx) = mpsc::sync_channel(1);
-    assert!(session.send(SessionCommand::Request { id, value, reply }));
+    assert!(session.send(command(reply)));
     rx.recv_timeout(Duration::from_secs(5)).expect("a reply")
+}
+
+const RTT_BLOCK: u64 = 0x3100_0000;
+
+/// Answers frames on the mock's RTT control channel as the firmware would,
+/// refusing WRITEs for `refused_id`; returns every request it saw.
+fn fake_firmware(
+    mock: &MockLink,
+    refused_id: u32,
+    stop: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<Vec<(u8, Vec<u8>)>> {
+    let mock = mock.clone();
+    std::thread::spawn(move || {
+        let mut decoder = Decoder::default();
+        let mut seen = Vec::new();
+        loop {
+            // Read once more after the stop, for what the session sent as it closed
+            let stopping = stop.load(Ordering::Relaxed);
+            let mut frames = Vec::new();
+            decoder.feed(&mock.take_down(0), |f| frames.push(f));
+            for f in frames {
+                let refused = f.cmd == cmd::WRITE && f.payload[4..8] == refused_id.to_le_bytes();
+                let status = if refused { 5 } else { 0 };
+                mock.push_up(1, &wire::encode(f.cmd | wire::REPLY, f.seq, &[status]));
+                seen.push((f.cmd, f.payload));
+            }
+            if stopping {
+                return seen;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    })
 }
 
 #[test]
@@ -154,4 +208,64 @@ fn a_target_running_another_build_refuses_writes() {
     let err = request(&session, kp.id, 50.0).unwrap_err();
     assert!(err.contains("not running the open ELF"), "{err}");
     assert_eq!(mock.peek(kp.requested_address, 4), 40.0f32.to_le_bytes());
+}
+
+#[test]
+fn a_firmware_with_rtt_control_channels_gets_framed_requests_and_can_save() {
+    let (layout, catalog, mock) = fixture();
+    let kp = catalog.entries[0].clone();
+    let other = catalog.entries[1].clone();
+    mock.init_rtt_channels(
+        RTT_BLOCK,
+        &[("defmt", 256), ("telemetry", 256)],
+        &[("control", 256)],
+    );
+    let stop = Arc::new(AtomicBool::new(false));
+    let firmware = fake_firmware(&mock, other.id, stop.clone());
+    let (session, _sink) = start_with(&mock, layout, catalog, Some(RTT_BLOCK));
+
+    request(&session, kp.id, 55.5).unwrap();
+    // The firmware applies it, not the session
+    assert_eq!(mock.peek(kp.requested_address, 4), 40.0f32.to_le_bytes());
+    let err = request(&session, other.id, 1.0).unwrap_err();
+    assert!(err.contains("outside the range"), "{err}");
+    call(&session, |reply| SessionCommand::Discard { reply }).unwrap();
+    call(&session, |reply| SessionCommand::Save { reply }).unwrap();
+    drop(session);
+    stop.store(true, Ordering::Relaxed);
+    let seen = firmware.join().unwrap();
+
+    let commands: Vec<u8> = seen.iter().map(|(c, _)| *c).collect();
+    assert_eq!(commands[0], cmd::LEASE, "{commands:?}");
+    assert_eq!(commands.last(), Some(&cmd::RELEASE), "{commands:?}");
+    let token = &seen[0].1[..4];
+    let write = &seen.iter().find(|(c, _)| *c == cmd::WRITE).unwrap().1;
+    assert_eq!(&write[..4], token);
+    assert_eq!(&write[4..8], &kp.id.to_le_bytes());
+    assert_eq!(&write[8..], &wire::slot(kp.kind.tag(), 55.5f32.to_bits()));
+    for code in [cmd::DISCARD, cmd::SAVE] {
+        let (_, payload) = seen.iter().find(|(c, _)| *c == code).unwrap();
+        assert_eq!(&payload[..], token);
+    }
+}
+
+#[test]
+fn a_firmware_without_rtt_control_channels_is_tuned_through_memory_and_cannot_save() {
+    let (layout, catalog, mock) = fixture();
+    let kp = catalog.entries[0].clone();
+    mock.init_rtt(RTT_BLOCK, "defmt", 256);
+    let (session, sink) = start_with(&mock, layout, catalog, Some(RTT_BLOCK));
+    wait_for("the table check", || {
+        matches!(
+            sink.last_tune(),
+            Some(SessionEvent::Tune {
+                check: CatalogCheck::Matches,
+                ..
+            })
+        )
+    });
+    request(&session, kp.id, 55.5).unwrap();
+    assert_eq!(mock.peek(kp.requested_address, 4), 55.5f32.to_le_bytes());
+    let err = call(&session, |reply| SessionCommand::Save { reply }).unwrap_err();
+    assert!(err.contains("connect over USB"), "{err}");
 }

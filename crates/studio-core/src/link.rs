@@ -23,7 +23,7 @@ use crate::stats::LinkStats;
 use crate::tune::{CatalogCheck, TuneValue};
 use crate::wire::{self, cmd, Decoder, Frame, Reader};
 
-const REPLY_TIMEOUT: Duration = Duration::from_millis(1000);
+pub const REPLY_TIMEOUT: Duration = Duration::from_millis(1000);
 /// A save erases and programs a flash sector before it answers.
 pub const SAVE_TIMEOUT: Duration = Duration::from_millis(3000);
 const HELLO_ATTEMPTS: usize = 3;
@@ -59,6 +59,15 @@ where
         })
         .expect("spawn link session thread");
     Session::from_parts(tx, thread)
+}
+
+/// A lease token that differs between sessions and tools; never zero.
+pub fn session_token() -> u32 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() ^ std::process::id())
+        .unwrap_or(1)
+        | 1
 }
 
 fn status(sink: &dyn SessionSink, state: LinkState, message: Option<String>) {
@@ -114,11 +123,7 @@ impl Worker {
         options: LinkOptions,
         sink: Arc<dyn SessionSink>,
     ) -> Result<Self, String> {
-        let token = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.subsec_nanos() ^ std::process::id())
-            .unwrap_or(1)
-            | 1;
+        let token = session_token();
         let mut worker = Self {
             stream,
             decoder: Decoder::default(),

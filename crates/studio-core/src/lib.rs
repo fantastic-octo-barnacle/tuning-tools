@@ -6,6 +6,7 @@ pub mod frame;
 pub mod link;
 pub mod log;
 pub mod plan;
+pub mod rtt_tuning;
 pub mod schedule;
 pub mod session;
 pub mod stats;

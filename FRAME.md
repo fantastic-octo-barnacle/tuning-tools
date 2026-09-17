@@ -134,7 +134,15 @@ same codec and enums from one source.
   4 KiB NoBlockSkip, down 0 `control` 256 B BlockIfFull. `defmt-rtt`
   hard-codes one channel and owns `_SEGGER_RTT`, so it cannot coexist with a
   second stream. NoBlockSkip drops whole frames under host stall; the sequence
-  number makes gaps visible.
+  number makes gaps visible. As built: `hal::rtt::init()` in every firmware,
+  with defmt 4 KiB, telemetry 4 KiB and control 512 B, all NoBlockSkip (the
+  firmware polls control every 5 ms, so the host never needs to block). The
+  block lives in a `.rtt` linker section in DTCM on the H7: in D-cached AXI
+  SRAM the core's RdOff store flushed a stale descriptor over the WrOff the
+  probe had just written, so requests vanished and defmt frames tore. The
+  probe session sends only requests there (lease on first request, WRITE,
+  DISCARD, SAVE); it keeps sampling and catalog checks on SWD, and falls back
+  to cell writes when the channels are absent.
 - **USB CDC.** Same frames on the CDC bulk endpoints; the carrier is chosen at
   runtime by whichever link says HELLO first, or both. DM-MC02 enumerates as
   VID `0xc0de` PID `0xcafe`, product `rm-telemetry`; the host lists ports with
@@ -240,7 +248,7 @@ Each milestone ends in something usable on a real robot.
 | M3 | Framed protocol over RTT up 1 / down 0 and USB CDC; `TelemetrySource`; session lease, policy, SAVE/DISCARD, A/B storage | Same tune session works over the Type-C cable with no probe, and a value survives a power cycle |
 | M3a | Done: framed protocol over USB CDC, lease, policy, DISCARD, link session in the app with no ELF | Tune over the Type-C cable with no probe |
 | M3b | Done: SAVE to A/B sectors on the board's W25Q64 QSPI flash, restored at boot. External flash does not stall the CPU the way an internal-flash erase would, and a save costs no control ticks | A value survives a power cycle |
-| M3c | Deferred: framed protocol over RTT, so the probe carrier can SAVE too | Same session over the probe |
+| M3c | Done: tuning requests and SAVE over RTT up 1 / down 0 in the probe session, sharing the firmware's server and lease with USB | Same session over the probe |
 | M4 | Recorder, FFT, profiles, layouts, packaging for macOS and Windows | A teammate installs a release and tunes without reading source |
 | M5 | Printable encoding, WebSocket carrier for the simulator, OpenOCD fallback | Optional, only if pulled |
 
