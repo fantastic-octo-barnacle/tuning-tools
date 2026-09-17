@@ -1,12 +1,15 @@
 //! Carriers: how the studio reaches a target.
 //!
-//! A carrier gives random access to target memory ([`MemoryAccess`]) and, when
-//! the firmware has one, a byte stream from the target ([`ByteStream`], the
-//! defmt log on RTT up 0). Every carrier is owned by one hardware thread; the
-//! traits take `&mut self` and nothing here is shared.
+//! A carrier gives random access to target memory ([`MemoryAccess`]). The log
+//! stream (RTT) and the core run state are read through that same memory, so a
+//! probe needs one open memory interface and nothing else. Every carrier is
+//! owned by one hardware thread; the traits take `&mut self` and nothing here
+//! is shared.
 
+pub mod cortex_m;
 pub mod mock;
 pub mod probe;
+pub mod rtt;
 
 use serde::Serialize;
 
@@ -42,13 +45,6 @@ pub trait MemoryAccess {
     fn write(&mut self, address: u64, data: &[u8]) -> Result<()>;
 }
 
-/// Bytes the target sends on its own. `read` never blocks.
-pub trait ByteStream {
-    /// Copy pending bytes into `buf`; `Ok(0)` when there are none yet.
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize>;
-    fn state(&self) -> StreamState;
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
 pub enum StreamState {
@@ -58,6 +54,8 @@ pub enum StreamState {
     Searching,
     Attached {
         channel: String,
+        /// The firmware blocks when the buffer is full, so a slow host stalls it
+        blocking: bool,
     },
 }
 
@@ -72,9 +70,12 @@ pub enum CoreState {
     Unknown,
 }
 
-/// A connected target: memory plus the log stream.
+/// A connected target.
 pub trait Link: Send {
-    fn memory(&mut self) -> &mut dyn MemoryAccess;
-    fn log(&mut self) -> &mut dyn ByteStream;
-    fn core_state(&mut self) -> Result<CoreState>;
+    /// Run `body` with target memory held open.
+    ///
+    /// Opening memory can be expensive (a probe re-reads the access port's
+    /// registers, several USB round trips), so callers stay inside `body` for as
+    /// long as they can and only come back out to reopen after persistent errors.
+    fn with_memory(&mut self, body: &mut dyn FnMut(&mut dyn MemoryAccess)) -> Result<()>;
 }

@@ -101,13 +101,14 @@ pub async fn session_connect(
         selector: request.probe.filter(|s| !s.is_empty()),
         chip: request.chip.trim().to_string(),
         speed_khz: request.speed_khz,
-        rtt_address: elf.find_symbol("_SEGGER_RTT").map(|s| s.address),
     };
+    let rtt_address = elf.find_symbol("_SEGGER_RTT").map(|s| s.address);
     let session = Session::spawn(
         move || ProbeLink::open(&config).map(|link| Box::new(link) as Box<dyn Link>),
         SessionOptions {
             rate_hz: request.rate_hz,
             elf: Some(elf_bytes),
+            rtt_address,
         },
         Arc::new(ChannelSink { data, events }),
     );

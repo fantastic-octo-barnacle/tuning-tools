@@ -1,18 +1,23 @@
-//! Debug probe carrier over probe-rs: SWD memory access on core 0 and RTT.
+//! Debug probe carrier over probe-rs: SWD memory access through core 0's MEM-AP.
+//!
+//! Memory goes straight through the access port rather than a probe-rs `Core`:
+//! the core is never halted, and the AP handle is kept open for as long as the
+//! session samples, which saves several USB round trips per read.
 
-use std::time::{Duration, Instant};
-
+use probe_rs::architecture::arm::dp::DpAddress;
+use probe_rs::architecture::arm::memory::ArmMemoryInterface;
+use probe_rs::architecture::arm::{ApV2Address, FullyQualifiedApAddress};
 use probe_rs::config::Registry;
 use probe_rs::probe::list::Lister;
 use probe_rs::probe::DebugProbeSelector;
-use probe_rs::rtt::{Rtt, ScanRegion};
-use probe_rs::{CoreStatus, MemoryInterface, Permissions, Session};
+use probe_rs::{Permissions, Session};
+use probe_rs_target::{ApAddress, CoreAccessOptions};
 use serde::{Deserialize, Serialize};
 
-use crate::{ByteStream, CarrierError, CoreState, Link, MemoryAccess, Result, StreamState};
+use crate::{CarrierError, Link, MemoryAccess, Result};
 
-/// How often to look for the RTT control block before the firmware sets it up.
-const RTT_RETRY: Duration = Duration::from_millis(500);
+/// SWD clock when the user does not pick one; probes clamp it to what they support.
+pub const DEFAULT_SPEED_KHZ: u32 = 4000;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,14 +62,14 @@ pub struct ProbeConfig {
     pub selector: Option<String>,
     /// probe-rs chip name, e.g. `STM32H723VG`
     pub chip: String,
+    /// `None` uses [`DEFAULT_SPEED_KHZ`]
     pub speed_khz: Option<u32>,
-    /// Address of `_SEGGER_RTT` from the ELF; `None` means no log stream
-    pub rtt_address: Option<u64>,
 }
 
 pub struct ProbeLink {
     session: Session,
-    rtt: RttState,
+    /// The MEM-AP core 0 is debugged through; it sees the core's memory map
+    ap: FullyQualifiedApAddress,
 }
 
 impl ProbeLink {
@@ -99,135 +104,71 @@ impl ProbeLink {
                 }
             }
         };
-        if let Some(khz) = config.speed_khz {
-            probe
-                .set_speed(khz)
-                .map_err(|e| CarrierError::Probe(e.to_string()))?;
-        }
+        probe
+            .set_speed(config.speed_khz.unwrap_or(DEFAULT_SPEED_KHZ))
+            .map_err(|e| CarrierError::Probe(e.to_string()))?;
         let session = probe
             .attach(config.chip.as_str(), Permissions::default())
             .map_err(|e| CarrierError::Attach(e.to_string()))?;
-        Ok(Self {
-            session,
-            rtt: match config.rtt_address {
-                Some(address) => RttState::Searching {
-                    address,
-                    last_try: None,
-                },
-                None => RttState::Absent,
-            },
-        })
+        let ap = core_memory_ap(&session)?;
+        tracing::info!(?ap, "attached");
+        Ok(Self { session, ap })
     }
 }
 
-enum RttState {
-    Absent,
-    Searching {
-        address: u64,
-        last_try: Option<Instant>,
-    },
-    Attached {
-        rtt: Box<Rtt>,
-        channel: String,
-    },
+fn core_memory_ap(session: &Session) -> Result<FullyQualifiedApAddress> {
+    let core = session
+        .target()
+        .cores
+        .first()
+        .ok_or_else(|| CarrierError::Attach("target has no cores".into()))?;
+    let CoreAccessOptions::Arm(options) = &core.core_access_options else {
+        return Err(CarrierError::Attach(
+            "only Arm Cortex-M targets are supported".into(),
+        ));
+    };
+    let dp = options
+        .targetsel
+        .map_or(DpAddress::Default, DpAddress::Multidrop);
+    Ok(match &options.ap {
+        ApAddress::V1(ap) => FullyQualifiedApAddress::v1_with_dp(dp, *ap),
+        ApAddress::V2(ap) => FullyQualifiedApAddress::v2_with_dp(dp, ApV2Address::new(*ap)),
+    })
 }
 
 impl Link for ProbeLink {
-    fn memory(&mut self) -> &mut dyn MemoryAccess {
-        self
-    }
-
-    fn log(&mut self) -> &mut dyn ByteStream {
-        self
-    }
-
-    fn core_state(&mut self) -> Result<CoreState> {
-        let mut core = self
+    fn with_memory(&mut self, body: &mut dyn FnMut(&mut dyn MemoryAccess)) -> Result<()> {
+        let interface = self
             .session
-            .core(0)
+            .get_arm_interface()
             .map_err(|e| CarrierError::Other(e.to_string()))?;
-        let status = core
-            .status()
-            .map_err(|e| CarrierError::Other(e.to_string()))?;
-        Ok(match status {
-            CoreStatus::Running => CoreState::Running,
-            CoreStatus::Halted(_) => CoreState::Halted,
-            CoreStatus::Sleeping => CoreState::Sleeping,
-            CoreStatus::LockedUp => CoreState::LockedUp,
-            CoreStatus::Unknown => CoreState::Unknown,
-        })
+        let mut memory = interface
+            .memory_interface(&self.ap)
+            .map_err(|e| CarrierError::Other(format!("could not open the memory AP: {e}")))?;
+        body(&mut ApMemory(&mut *memory));
+        Ok(())
     }
 }
 
-impl MemoryAccess for ProbeLink {
+struct ApMemory<'a>(&'a mut dyn ArmMemoryInterface);
+
+impl MemoryAccess for ApMemory<'_> {
     fn read(&mut self, address: u64, buf: &mut [u8]) -> Result<()> {
         let len = buf.len();
-        let err = |reason: String| CarrierError::Read {
+        self.0.read(address, buf).map_err(|e| CarrierError::Read {
             address,
             len,
-            reason,
-        };
-        let mut core = self.session.core(0).map_err(|e| err(e.to_string()))?;
-        core.read(address, buf).map_err(|e| err(e.to_string()))
+            reason: e.to_string(),
+        })
     }
 
     fn write(&mut self, address: u64, data: &[u8]) -> Result<()> {
-        let err = |reason: String| CarrierError::Write {
-            address,
-            len: data.len(),
-            reason,
-        };
-        let mut core = self.session.core(0).map_err(|e| err(e.to_string()))?;
-        core.write(address, data).map_err(|e| err(e.to_string()))
-    }
-}
-
-impl ByteStream for ProbeLink {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-        let mut core = self
-            .session
-            .core(0)
-            .map_err(|e| CarrierError::Other(e.to_string()))?;
-        match &mut self.rtt {
-            RttState::Absent => Ok(0),
-            RttState::Searching { address, last_try } => {
-                if last_try.is_some_and(|t| t.elapsed() < RTT_RETRY) {
-                    return Ok(0);
-                }
-                *last_try = Some(Instant::now());
-                // Before the firmware runs `rtt_init` the block has no valid ID yet
-                let Ok(mut rtt) = Rtt::attach_region(&mut core, &ScanRegion::Exact(*address))
-                else {
-                    return Ok(0);
-                };
-                let Some(up) = rtt.up_channel(0) else {
-                    return Ok(0);
-                };
-                let channel = up.name().unwrap_or("up 0").to_string();
-                tracing::info!(%channel, address = *address, "RTT attached");
-                self.rtt = RttState::Attached {
-                    rtt: Box::new(rtt),
-                    channel,
-                };
-                Ok(0)
-            }
-            RttState::Attached { rtt, .. } => {
-                let up = rtt
-                    .up_channel(0)
-                    .ok_or_else(|| CarrierError::Other("RTT up channel 0 vanished".into()))?;
-                up.read(&mut core, buf)
-                    .map_err(|e| CarrierError::Other(format!("RTT read failed: {e}")))
-            }
-        }
-    }
-
-    fn state(&self) -> StreamState {
-        match &self.rtt {
-            RttState::Absent => StreamState::Absent,
-            RttState::Searching { .. } => StreamState::Searching,
-            RttState::Attached { channel, .. } => StreamState::Attached {
-                channel: channel.clone(),
-            },
-        }
+        self.0
+            .write(address, data)
+            .map_err(|e| CarrierError::Write {
+                address,
+                len: data.len(),
+                reason: e.to_string(),
+            })
     }
 }

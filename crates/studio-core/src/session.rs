@@ -8,7 +8,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use studio_carriers::{CarrierError, CoreState, Link, StreamState};
+use studio_carriers::rtt::RttReader;
+use studio_carriers::{cortex_m, CarrierError, CoreState, Link, MemoryAccess, StreamState};
 
 use crate::frame::FrameBuilder;
 use crate::log::{LogDecoder, LogLine};
@@ -22,6 +23,9 @@ pub const STATS_PERIOD: Duration = Duration::from_millis(500);
 pub const MAX_RATE_HZ: f64 = 2000.0;
 /// Every read failing for this long means the link is gone.
 pub const LINK_LOST_AFTER: Duration = Duration::from_secs(2);
+/// Every read failing for this long reopens target memory, which recovers a
+/// probe whose access port lost its state.
+pub const REOPEN_AFTER: Duration = Duration::from_millis(250);
 
 pub enum SessionCommand {
     SetWatches(Vec<ReadItem>),
@@ -71,6 +75,8 @@ pub struct SessionOptions {
     pub rate_hz: f64,
     /// ELF bytes for the defmt table; `None` disables log decoding
     pub elf: Option<Vec<u8>>,
+    /// RTT control block (`_SEGGER_RTT`); the log is read from its up channel 0
+    pub rtt_address: Option<u64>,
 }
 
 pub struct Session {
@@ -92,17 +98,13 @@ impl Session {
                     state: LinkState::Connecting,
                     message: None,
                 });
-                let link = match connect() {
-                    Ok(link) => link,
-                    Err(e) => {
-                        sink.event(SessionEvent::Status {
-                            state: LinkState::Failed,
-                            message: Some(e.to_string()),
-                        });
-                        return;
-                    }
-                };
-                Worker::new(link, options, sink).run(rx);
+                match connect() {
+                    Ok(link) => Worker::new(options, sink).run(link, rx),
+                    Err(e) => sink.event(SessionEvent::Status {
+                        state: LinkState::Failed,
+                        message: Some(e.to_string()),
+                    }),
+                }
             })
             .expect("spawn session thread");
         Self {
@@ -130,8 +132,14 @@ impl Drop for Session {
     }
 }
 
+/// Why the worker came out of target memory.
+enum Exit {
+    Stop,
+    Lost(String),
+    Reopen,
+}
+
 struct Worker {
-    link: Box<dyn Link>,
     sink: Arc<dyn SessionSink>,
     start: Instant,
     rate_hz: f64,
@@ -142,13 +150,17 @@ struct Worker {
     row: Vec<f64>,
     stats: LinkStats,
     decoder: Option<LogDecoder>,
+    rtt: Option<RttReader>,
     log_buf: Vec<u8>,
     last_error: Option<String>,
     failing_since: Option<Instant>,
+    log_tick: Ticker,
+    frame_tick: Ticker,
+    stats_tick: Ticker,
 }
 
 impl Worker {
-    fn new(link: Box<dyn Link>, options: SessionOptions, sink: Arc<dyn SessionSink>) -> Self {
+    fn new(options: SessionOptions, sink: Arc<dyn SessionSink>) -> Self {
         let start = Instant::now();
         let decoder = options.elf.and_then(|elf| {
             let log_sink = sink.clone();
@@ -162,8 +174,11 @@ impl Worker {
                 }
             }
         });
+        let rtt = decoder
+            .as_ref()
+            .and(options.rtt_address)
+            .map(RttReader::new);
         Self {
-            link,
             sink,
             start,
             rate_hz: options.rate_hz.clamp(1.0, MAX_RATE_HZ),
@@ -174,52 +189,44 @@ impl Worker {
             row: Vec::new(),
             stats: LinkStats::default(),
             decoder,
+            rtt,
             log_buf: vec![0; 4096],
             last_error: None,
             failing_since: None,
+            log_tick: Ticker::new(start, LOG_PERIOD),
+            frame_tick: Ticker::new(start, FRAME_PERIOD),
+            stats_tick: Ticker::new(start + STATS_PERIOD, STATS_PERIOD),
         }
     }
 
-    fn run(mut self, rx: mpsc::Receiver<SessionCommand>) {
+    fn run(mut self, mut link: Box<dyn Link>, rx: mpsc::Receiver<SessionCommand>) {
         self.sink.event(SessionEvent::Status {
             state: LinkState::Connected,
             message: None,
         });
-        let now = Instant::now();
-        let mut log_tick = Ticker::new(now, LOG_PERIOD);
-        let mut frame_tick = Ticker::new(now, FRAME_PERIOD);
-        let mut stats_tick = Ticker::new(now + STATS_PERIOD, STATS_PERIOD);
-
         let failure = loop {
-            let mut next = log_tick
-                .deadline()
-                .min(frame_tick.deadline())
-                .min(stats_tick.deadline());
-            if let Some(s) = &self.sampler {
-                next = next.min(s.deadline());
-            }
-            let wait = next.saturating_duration_since(Instant::now());
-            match rx.recv_timeout(wait) {
-                Ok(SessionCommand::Stop) | Err(RecvTimeoutError::Disconnected) => break None,
-                Ok(SessionCommand::SetWatches(items)) => self.set_watches(items),
-                Ok(SessionCommand::SetRate(hz)) => self.set_rate(hz),
-                Err(RecvTimeoutError::Timeout) => {}
-            }
-
-            let now = Instant::now();
-            if self.sampler.as_mut().is_some_and(|s| s.poll(now)) {
-                if let Some(message) = self.sample(now) {
-                    break Some(message);
+            let mut exit = Exit::Reopen;
+            let opened = link.with_memory(&mut |memory| exit = self.serve(memory, &rx));
+            match (opened, exit) {
+                (_, Exit::Stop) => break None,
+                (_, Exit::Lost(message)) => break Some(message),
+                (Ok(()), Exit::Reopen) => {}
+                (Err(e), Exit::Reopen) => {
+                    // Memory would not open: wait a little, still answering commands
+                    let now = Instant::now();
+                    let since = *self.failing_since.get_or_insert(now);
+                    if now - since >= LINK_LOST_AFTER {
+                        break Some(e.to_string());
+                    }
+                    self.last_error = Some(e.to_string());
+                    match rx.recv_timeout(REOPEN_AFTER) {
+                        Ok(SessionCommand::Stop) | Err(RecvTimeoutError::Disconnected) => {
+                            break None
+                        }
+                        Ok(command) => self.apply(command),
+                        Err(RecvTimeoutError::Timeout) => {}
+                    }
                 }
-            }
-            if log_tick.poll(now) {
-                self.pump_log(now);
-            }
-            if frame_tick.poll(now) {
-                self.flush_frame();
-            }
-            if stats_tick.poll(now) {
-                self.report_stats();
             }
         };
 
@@ -232,6 +239,63 @@ impl Worker {
             },
             message: failure,
         });
+    }
+
+    /// The session loop, with target memory held open.
+    fn serve(
+        &mut self,
+        memory: &mut dyn MemoryAccess,
+        rx: &mpsc::Receiver<SessionCommand>,
+    ) -> Exit {
+        let opened = Instant::now();
+        loop {
+            let mut next = self
+                .log_tick
+                .deadline()
+                .min(self.frame_tick.deadline())
+                .min(self.stats_tick.deadline());
+            if let Some(s) = &self.sampler {
+                next = next.min(s.deadline());
+            }
+            let wait = next.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(wait) {
+                Ok(SessionCommand::Stop) | Err(RecvTimeoutError::Disconnected) => {
+                    return Exit::Stop
+                }
+                Ok(command) => self.apply(command),
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+
+            let now = Instant::now();
+            if self.sampler.as_mut().is_some_and(|s| s.poll(now)) {
+                if let Some(message) = self.sample(memory, now) {
+                    return Exit::Lost(message);
+                }
+                if self
+                    .failing_since
+                    .is_some_and(|since| now - since.max(opened) >= REOPEN_AFTER)
+                {
+                    return Exit::Reopen;
+                }
+            }
+            if self.log_tick.poll(now) {
+                self.pump_log(memory, now);
+            }
+            if self.frame_tick.poll(now) {
+                self.flush_frame();
+            }
+            if self.stats_tick.poll(now) {
+                self.report_stats(memory);
+            }
+        }
+    }
+
+    fn apply(&mut self, command: SessionCommand) {
+        match command {
+            SessionCommand::SetWatches(items) => self.set_watches(items),
+            SessionCommand::SetRate(hz) => self.set_rate(hz),
+            SessionCommand::Stop => {}
+        }
     }
 
     fn set_watches(&mut self, items: Vec<ReadItem>) {
@@ -258,9 +322,9 @@ impl Worker {
     }
 
     /// Returns a message when the link should be considered lost.
-    fn sample(&mut self, now: Instant) -> Option<String> {
+    fn sample(&mut self, memory: &mut dyn MemoryAccess, now: Instant) -> Option<String> {
         let started = Instant::now();
-        let outcome = self.plan.sample(self.link.memory(), &mut self.row);
+        let outcome = self.plan.sample(memory, &mut self.row);
         let read = started.elapsed();
         self.stats
             .record_tick(now, read, outcome.bytes, outcome.regions_failed);
@@ -285,13 +349,13 @@ impl Worker {
         None
     }
 
-    fn pump_log(&mut self, now: Instant) {
-        let Some(decoder) = &self.decoder else {
+    fn pump_log(&mut self, memory: &mut dyn MemoryAccess, now: Instant) {
+        let (Some(decoder), Some(rtt)) = (&self.decoder, &mut self.rtt) else {
             return;
         };
         // Drain what is buffered, bounded so a chatty target cannot starve sampling
         for _ in 0..8 {
-            match self.link.log().read(&mut self.log_buf) {
+            match rtt.read(memory, now, &mut self.log_buf) {
                 Ok(0) => break,
                 Ok(n) => {
                     self.stats.log_bytes += n as u64;
@@ -318,13 +382,12 @@ impl Worker {
         }
     }
 
-    fn report_stats(&mut self) {
-        let core = self.link.core_state().unwrap_or(CoreState::Unknown);
-        let log = if self.decoder.is_some() {
-            self.link.log().state()
-        } else {
-            StreamState::Absent
-        };
+    fn report_stats(&mut self, memory: &mut dyn MemoryAccess) {
+        let core = cortex_m::core_state(memory).unwrap_or(CoreState::Unknown);
+        let log = self
+            .rtt
+            .as_ref()
+            .map_or(StreamState::Absent, RttReader::state);
         let skipped = self.skipped_before + self.sampler.as_ref().map_or(0, Ticker::skipped);
         let stats = self.stats.snapshot(
             if self.sampler.is_some() {

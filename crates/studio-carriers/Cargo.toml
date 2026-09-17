@@ -8,6 +8,7 @@ authors.workspace = true
 
 [dependencies]
 probe-rs = "0.32"
+probe-rs-target = "0.32"
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

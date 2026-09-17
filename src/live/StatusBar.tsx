@@ -76,13 +76,22 @@ export function StatusBar({ elf, link, stats }: { elf: OpenedElf | null; link: L
             </Cell>
           )}
           <Cell tone={stats.core === "running" ? undefined : "warn"}>Core {coreText[stats.core].toLowerCase()}</Cell>
-          <Cell>
-            {stats.log.state === "attached"
-              ? `Log on RTT “${stats.log.channel}”`
-              : stats.log.state === "searching"
-                ? "Looking for RTT"
-                : "No RTT log"}
-          </Cell>
+          {stats.log.state === "attached" && stats.log.blocking ? (
+            <Cell
+              tone="warn"
+              title="This channel is in block-if-full mode (another tool may have set it). The firmware waits whenever the log buffer fills, so logging can stall control loops. Reset the board to restore the firmware's own mode."
+            >
+              Log on RTT “{stats.log.channel}”, blocking
+            </Cell>
+          ) : (
+            <Cell>
+              {stats.log.state === "attached"
+                ? `Log on RTT “${stats.log.channel}”`
+                : stats.log.state === "searching"
+                  ? "Looking for RTT"
+                  : "No RTT log"}
+            </Cell>
+          )}
         </>
       )}
     </footer>

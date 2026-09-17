@@ -43,6 +43,7 @@ Check a probe and board without the app (prints values and log lines):
 ```bash
 cargo run -p studio-core --example watch -- --elf path/to/firmware --list
 cargo run -p studio-core --example watch -- --elf path/to/firmware --chip STM32H723VG <static path>...
+cargo run --release -p studio-carriers --example probe_bench -- STM32H723VG   # raw SWD read latency
 ```
 
 Requires Rust stable, Node 20+, and the platform Tauri prerequisites.

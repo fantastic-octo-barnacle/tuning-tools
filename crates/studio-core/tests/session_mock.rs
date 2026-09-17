@@ -58,6 +58,7 @@ fn samples_watched_values_into_frames() {
         SessionOptions {
             rate_hz: 500.0,
             elf: None,
+            rtt_address: None,
         },
         sink.clone(),
     );
@@ -102,10 +103,13 @@ fn samples_watched_values_into_frames() {
     assert!(first.columns[1].1.iter().all(|&v| v == 0.25));
     let times: Vec<f64> = decoded.iter().flat_map(|f| f.times.clone()).collect();
     assert!(times.windows(2).all(|w| w[1] > w[0]), "time is monotonic");
-    // Both values sit in one region, so one read per tick
-    assert_eq!(mock.read_calls() as usize, times.len());
-
     let events = sink.events.lock().unwrap();
+    // Both values sit in one region, so one read per tick, plus the core state per stats report
+    let reports = events
+        .iter()
+        .filter(|e| matches!(e, SessionEvent::Stats { .. }))
+        .count();
+    assert_eq!(mock.read_calls() as usize, times.len() + reports);
     let achieved = events.iter().rev().find_map(|e| match e {
         SessionEvent::Stats { stats, .. } => Some(stats.achieved_hz),
         _ => None,
@@ -138,6 +142,7 @@ fn failed_connect_reports_failure() {
         SessionOptions {
             rate_hz: 100.0,
             elf: None,
+            rtt_address: None,
         },
         sink.clone(),
     );

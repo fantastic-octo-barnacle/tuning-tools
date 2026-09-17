@@ -12,7 +12,7 @@ export type CoreState = "running" | "halted" | "sleeping" | "lockedUp" | "unknow
 export type StreamState =
   | { state: "absent" }
   | { state: "searching" }
-  | { state: "attached"; channel: string };
+  | { state: "attached"; channel: string; blocking: boolean };
 
 export interface Stats {
   targetHz: number;

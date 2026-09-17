@@ -3,16 +3,19 @@ import * as api from "./api";
 import { Link } from "./useSession";
 
 const RATES = [10, 50, 100, 200, 500, 1000];
+/** SWD clock; faster makes large reads quicker but needs short, clean wiring */
+const SPEEDS = [1000, 4000, 10000];
 const SETTINGS_KEY = "connection";
 
 interface Settings {
   probe: string;
   chip: string;
   rateHz: number;
+  speedKhz: number;
 }
 
 function loadSettings(): Settings {
-  const fallback = { probe: "", chip: "", rateHz: 100 };
+  const fallback = { probe: "", chip: "", rateHz: 100, speedKhz: 4000 };
   try {
     return { ...fallback, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") };
   } catch {
@@ -63,7 +66,7 @@ export function ConnectBar({ link, canConnect, onConnect, onDisconnect }: Props)
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (active) onDisconnect();
-    else onConnect({ probe: settings.probe || null, chip: settings.chip.trim(), speedKhz: null, rateHz: settings.rateHz });
+    else onConnect({ probe: settings.probe || null, chip: settings.chip.trim(), speedKhz: settings.speedKhz, rateHz: settings.rateHz });
   };
 
   const selectedMissing = settings.probe && probes && !probes.some((p) => p.selector === settings.probe);
@@ -112,6 +115,19 @@ export function ConnectBar({ link, canConnect, onConnect, onDisconnect }: Props)
             <option key={c} value={c} />
           ))}
         </datalist>
+      </label>
+      <label className="flex items-center gap-1.5" title="SWD clock speed. Lower it if reads fail on long or noisy wiring.">
+        <span className="text-muted">SWD</span>
+        <select
+          value={settings.speedKhz}
+          onChange={(e) => update({ speedKhz: Number(e.currentTarget.value) })}
+          disabled={active}
+          className="rounded-sm border border-rule bg-surface px-1 py-1"
+        >
+          {SPEEDS.map((k) => (
+            <option key={k} value={k}>{k / 1000} MHz</option>
+          ))}
+        </select>
       </label>
       <label className="flex items-center gap-1.5">
         <span className="text-muted">Sample at</span>

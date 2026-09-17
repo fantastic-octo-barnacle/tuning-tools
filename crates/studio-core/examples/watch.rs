@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! cargo run -p studio-core --example watch -- --chip STM32H723VG --elf <firmware> \
-//!     [--probe VID:PID[:SERIAL]] [--rate 200] [--secs 5] [--list] <symbol path>...
+//!     [--probe VID:PID[:SERIAL]] [--speed 4000] [--rate 200] [--secs 5] [--list] <symbol path>...
 //! ```
 //! `--list` prints RAM statics with numeric types instead of sampling.
 
@@ -53,7 +53,7 @@ impl SessionSink for Print {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let (mut chip, mut elf_path, mut probe) = (None, None, None);
+    let (mut chip, mut elf_path, mut probe, mut speed) = (None, None, None, None);
     let (mut rate, mut secs, mut list) = (200.0, 5u64, false);
     let mut symbols = Vec::new();
     while let Some(a) = args.next() {
@@ -61,6 +61,7 @@ fn main() {
             "--chip" => chip = args.next(),
             "--elf" => elf_path = args.next(),
             "--probe" => probe = args.next(),
+            "--speed" => speed = Some(args.next().unwrap().parse().unwrap()),
             "--rate" => rate = args.next().unwrap().parse().unwrap(),
             "--secs" => secs = args.next().unwrap().parse().unwrap(),
             "--list" => list = true,
@@ -105,12 +106,12 @@ fn main() {
     let config = ProbeConfig {
         selector: probe,
         chip: chip.expect("--chip <probe-rs chip name>"),
-        speed_khz: None,
-        rtt_address: elf.find_symbol("_SEGGER_RTT").map(|s| s.address),
+        speed_khz: speed,
     };
+    let rtt_address = elf.find_symbol("_SEGGER_RTT").map(|s| s.address);
     println!(
         "RTT control block: {:?}",
-        config.rtt_address.map(|a| format!("{a:#010x}"))
+        rtt_address.map(|a| format!("{a:#010x}"))
     );
     let sink = Arc::new(Print {
         last: Mutex::new(Vec::new()),
@@ -121,6 +122,7 @@ fn main() {
         SessionOptions {
             rate_hz: rate,
             elf: Some(std::fs::read(&elf_path).unwrap()),
+            rtt_address,
         },
         sink.clone(),
     );
