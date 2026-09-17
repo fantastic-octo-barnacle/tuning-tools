@@ -72,7 +72,8 @@ export function Scope({ watches, connected }: Props) {
   // Rebuild the chart when the plotted set or theme changes
   useEffect(() => {
     const el = host.current;
-    if (!el) return;
+    // Mode 2 needs at least one data series; the empty state covers this case
+    if (!el || traces.length === 0) return;
     const axis = {
       stroke: cssVar("--muted"),
       grid: { stroke: cssVar("--rule"), width: 1 },
