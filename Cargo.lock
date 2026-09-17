@@ -3968,6 +3968,7 @@ name = "studio-core"
 version = "0.1.0"
 dependencies = [
  "defmt-decoder",
+ "object 0.38.1",
  "serde",
  "studio-carriers",
  "studio-dwarf",

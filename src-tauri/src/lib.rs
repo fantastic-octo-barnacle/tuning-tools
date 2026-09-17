@@ -18,6 +18,7 @@ pub fn run() {
             session::session_disconnect,
             session::session_set_watches,
             session::session_set_rate,
+            session::session_request,
             session::watchable_leaves
         ])
         .run(tauri::generate_context!())

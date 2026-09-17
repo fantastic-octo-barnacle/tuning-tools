@@ -2,11 +2,14 @@
 //! these commands only start, stop and steer it. Samples reach the webview as
 //! binary frames on one channel, status, stats and log lines as JSON on another.
 
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use studio_carriers::probe::{self, ProbeConfig, ProbeInfo, ProbeLink};
 use studio_carriers::Link;
+use studio_core::catalog::{Catalog, TableLayout};
 use studio_core::plan::scalar_len;
 use studio_core::session::SessionOptions;
 use studio_core::{ReadItem, Session, SessionCommand, SessionEvent, SessionSink};
@@ -15,16 +18,36 @@ use studio_dwarf::{ElfInfo, NodeRef, SymbolNode};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::State;
 
-use crate::elf::LoadedElf;
+use crate::elf::{LoadedElf, Tuning};
 
 /// Scalars collected by [`watchable_leaves`] before it stops.
 const MAX_LEAVES: usize = 256;
+/// Longest a tuning write waits for the session thread
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Default)]
 pub struct SessionState {
     session: Mutex<Option<Session>>,
     /// Last watched set, re-sent when a new session connects
     watches: Mutex<Vec<ReadItem>>,
+}
+
+impl SessionState {
+    /// Hand a newly opened ELF's tuning table to a running session.
+    pub fn set_tuning(&self, tuning: Option<Tuning>) {
+        if let Some(session) = self
+            .session
+            .lock()
+            .expect("session state poisoned")
+            .as_ref()
+        {
+            session.send(catalog_command(tuning));
+        }
+    }
+}
+
+fn catalog_command(tuning: Option<Tuning>) -> SessionCommand {
+    SessionCommand::SetCatalog(tuning.map(|t| Box::new((*t).clone())))
 }
 
 struct ChannelSink {
@@ -82,7 +105,8 @@ pub async fn session_connect(
     elf: State<'_, LoadedElf>,
     state: State<'_, SessionState>,
 ) -> Result<(), String> {
-    let elf = elf.current()?;
+    let elf_state = elf;
+    let elf = elf_state.current()?;
     if request.chip.trim().is_empty() {
         return Err("choose the target chip first".into());
     }
@@ -103,6 +127,7 @@ pub async fn session_connect(
         speed_khz: request.speed_khz,
     };
     let rtt_address = elf.find_symbol("_SEGGER_RTT").map(|s| s.address);
+    let tuning = elf_state.tuning()?;
     let session = Session::spawn(
         move || ProbeLink::open(&config).map(|link| Box::new(link) as Box<dyn Link>),
         SessionOptions {
@@ -117,6 +142,9 @@ pub async fn session_connect(
         .lock()
         .expect("session state poisoned")
         .clone();
+    if tuning.is_some() {
+        session.send(catalog_command(tuning));
+    }
     if !watches.is_empty() {
         session.send(SessionCommand::SetWatches(watches));
     }
@@ -132,10 +160,12 @@ pub async fn session_disconnect(state: State<'_, SessionState>) -> Result<(), St
         .map_err(|e| e.to_string())
 }
 
+/// A value to sample: a symbol path, or a tuning table value by id
 #[derive(Deserialize)]
 pub struct WatchRequest {
     id: u32,
-    node: NodeRef,
+    node: Option<NodeRef>,
+    cell: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -153,11 +183,12 @@ pub fn session_set_watches(
     elf: State<'_, LoadedElf>,
     state: State<'_, SessionState>,
 ) -> Result<Vec<WatchResult>, String> {
+    let tuning = elf.tuning()?;
     let elf = elf.current()?;
     let mut items = Vec::new();
     let results = watches
         .into_iter()
-        .map(|w| match resolve(&elf, &w.node) {
+        .map(|w| match resolve_watch(&elf, tuning.as_deref(), &w) {
             Ok(mut item) => {
                 item.id = w.id;
                 items.push(item);
@@ -194,6 +225,46 @@ pub fn session_set_rate(hz: f64, state: State<'_, SessionState>) {
     {
         session.send(SessionCommand::SetRate(hz));
     }
+}
+
+fn resolve_watch(
+    elf: &ElfInfo,
+    tuning: Option<&(TableLayout, Catalog)>,
+    watch: &WatchRequest,
+) -> Result<ReadItem, String> {
+    match (&watch.node, watch.cell) {
+        (Some(node), _) => resolve(elf, node),
+        (None, Some(cell)) => tuning
+            .and_then(|(_, catalog)| catalog.entry(cell))
+            .map(|entry| entry.applied_item(0))
+            .ok_or_else(|| "this ELF's tuning table has no such value".into()),
+        (None, None) => Err("nothing to watch".into()),
+    }
+}
+
+/// Ask the firmware to run tuning value `id` at `value`.
+#[tauri::command]
+pub async fn session_request(
+    id: u32,
+    value: f64,
+    state: State<'_, SessionState>,
+) -> Result<(), String> {
+    let (reply, rx) = mpsc::sync_channel(1);
+    let sent = state
+        .session
+        .lock()
+        .expect("session state poisoned")
+        .as_ref()
+        .is_some_and(|s| s.send(SessionCommand::Request { id, value, reply }));
+    if !sent {
+        return Err("connect to the target first".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        rx.recv_timeout(REQUEST_TIMEOUT)
+            .unwrap_or_else(|_| Err("the target did not take the write in time".into()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn resolve(elf: &ElfInfo, node: &NodeRef) -> Result<ReadItem, String> {

@@ -2,7 +2,7 @@
 //! watched set on absolute deadlines, pumps the log stream and reports status.
 //! Everything else talks to it through [`SessionCommand`]s.
 
-use std::sync::mpsc::{self, Sender, TryRecvError};
+use std::sync::mpsc::{self, Sender, SyncSender, TryRecvError};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -11,15 +11,19 @@ use serde::Serialize;
 use studio_carriers::rtt::RttReader;
 use studio_carriers::{cortex_m, CarrierError, CoreState, Link, MemoryAccess, StreamState};
 
+use crate::catalog::{Catalog, TableLayout};
 use crate::frame::FrameBuilder;
 use crate::log::{LogDecoder, LogLine};
 use crate::plan::{ReadItem, ReadPlan};
 use crate::schedule::{sleep_until, Ticker};
 use crate::stats::{LinkStats, StatsSnapshot};
+use crate::tune::{CatalogCheck, TuneValue, Tuner};
 
 pub const FRAME_PERIOD: Duration = Duration::from_millis(33);
 pub const LOG_PERIOD: Duration = Duration::from_millis(10);
 pub const STATS_PERIOD: Duration = Duration::from_millis(500);
+/// Tune panel refresh; people read these, they do not plot them
+pub const TUNE_PERIOD: Duration = Duration::from_millis(100);
 pub const MAX_RATE_HZ: f64 = 2000.0;
 /// Every read failing for this long means the link is gone.
 pub const LINK_LOST_AFTER: Duration = Duration::from_secs(2);
@@ -29,9 +33,20 @@ const COMMAND_POLL: Duration = Duration::from_millis(10);
 /// probe whose access port lost its state.
 pub const REOPEN_AFTER: Duration = Duration::from_millis(250);
 
+pub type RequestReply = SyncSender<Result<(), String>>;
+type PendingRequest = (u32, f64, RequestReply);
+
 pub enum SessionCommand {
     SetWatches(Vec<ReadItem>),
     SetRate(f64),
+    /// The open ELF's tuning table; `None` when it declares none
+    SetCatalog(Option<Box<(TableLayout, Catalog)>>),
+    /// Ask the firmware to run catalog value `id` at `value`
+    Request {
+        id: u32,
+        value: f64,
+        reply: RequestReply,
+    },
     Stop,
 }
 
@@ -63,6 +78,10 @@ pub enum SessionEvent {
     },
     Log {
         lines: Vec<LogLine>,
+    },
+    Tune {
+        check: CatalogCheck,
+        values: Vec<TuneValue>,
     },
 }
 
@@ -160,6 +179,9 @@ struct Worker {
     log_tick: Ticker,
     frame_tick: Ticker,
     stats_tick: Ticker,
+    tuner: Option<Tuner>,
+    tune_tick: Ticker,
+    requests: Vec<PendingRequest>,
 }
 
 impl Worker {
@@ -200,6 +222,9 @@ impl Worker {
             log_tick: Ticker::new(start, LOG_PERIOD),
             frame_tick: Ticker::new(start, FRAME_PERIOD),
             stats_tick: Ticker::new(start + STATS_PERIOD, STATS_PERIOD),
+            tuner: None,
+            tune_tick: Ticker::new(start, TUNE_PERIOD),
+            requests: Vec::new(),
         }
     }
 
@@ -228,6 +253,9 @@ impl Worker {
                         sleep_until((Instant::now() + COMMAND_POLL).min(retry));
                         if self.drain_commands(&rx) {
                             break;
+                        }
+                        for (_, _, reply) in self.requests.drain(..) {
+                            let _ = reply.send(Err("the target's memory is not open".into()));
                         }
                     }
                     if self.stopping {
@@ -261,6 +289,9 @@ impl Worker {
                 .deadline()
                 .min(self.frame_tick.deadline())
                 .min(self.stats_tick.deadline());
+            if self.tuner.is_some() {
+                next = next.min(self.tune_tick.deadline());
+            }
             if let Some(s) = &self.sampler {
                 next = next.min(s.deadline());
             }
@@ -270,6 +301,7 @@ impl Worker {
             if self.drain_commands(rx) {
                 return Exit::Stop;
             }
+            let wrote = self.serve_requests(memory);
 
             let now = Instant::now();
             if self.sampler.as_mut().is_some_and(|s| s.poll(now)) {
@@ -292,6 +324,10 @@ impl Worker {
             if self.stats_tick.poll(now) {
                 self.report_stats(memory);
             }
+            // After a write, report at once so the panel shows the request land
+            if self.tune_tick.poll(now) || wrote {
+                self.report_tune(memory);
+            }
         }
     }
 
@@ -313,6 +349,13 @@ impl Worker {
         match command {
             SessionCommand::SetWatches(items) => self.set_watches(items),
             SessionCommand::SetRate(hz) => self.set_rate(hz),
+            SessionCommand::SetCatalog(catalog) => {
+                self.tuner = catalog.map(|c| {
+                    let (layout, catalog) = *c;
+                    Tuner::new(layout, catalog)
+                });
+            }
+            SessionCommand::Request { id, value, reply } => self.requests.push((id, value, reply)),
             SessionCommand::Stop => {}
         }
     }
@@ -389,6 +432,45 @@ impl Worker {
                 }
             }
         }
+    }
+
+    /// Write queued requests; `true` when any was attempted.
+    fn serve_requests(&mut self, memory: &mut dyn MemoryAccess) -> bool {
+        if self.requests.is_empty() {
+            return false;
+        }
+        for (id, value, reply) in std::mem::take(&mut self.requests) {
+            let result = match &mut self.tuner {
+                Some(tuner) => {
+                    if let Some(e) = tuner.verify(memory) {
+                        self.last_error = Some(e);
+                    }
+                    tuner.request(memory, id, value)
+                }
+                None => Err("the open ELF declares no tuning table".into()),
+            };
+            let _ = reply.send(result);
+        }
+        true
+    }
+
+    fn report_tune(&mut self, memory: &mut dyn MemoryAccess) {
+        let Some(tuner) = &mut self.tuner else {
+            return;
+        };
+        if let Some(e) = tuner.verify(memory) {
+            self.last_error = Some(e);
+        }
+        // Cells of another build hold unrelated memory, not values worth showing
+        let values = if *tuner.check() == CatalogCheck::Matches {
+            tuner.sample(memory)
+        } else {
+            Vec::new()
+        };
+        self.sink.event(SessionEvent::Tune {
+            check: tuner.check().clone(),
+            values,
+        });
     }
 
     fn flush_frame(&mut self) {

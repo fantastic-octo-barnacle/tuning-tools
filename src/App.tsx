@@ -8,6 +8,7 @@ import { ConnectBar } from "./live/ConnectBar";
 import { LogConsole } from "./live/LogConsole";
 import { Scope } from "./live/Scope";
 import { StatusBar } from "./live/StatusBar";
+import { TunePanel } from "./live/TunePanel";
 import { WatchTable } from "./live/WatchTable";
 import { useSession } from "./live/useSession";
 import { useWatches } from "./live/useWatches";
@@ -21,6 +22,7 @@ export default function App() {
   const [selected, setSelected] = useState<SymbolNode | null>(null);
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [leftTab, setLeftTab] = useState<"symbols" | "tune">("symbols");
   const session = useSession();
   const watch = useWatches(elf);
 
@@ -31,6 +33,7 @@ export default function App() {
       const opened = await openElf(path);
       setElf(opened);
       setSelected(null);
+      if (!opened.catalog) setLeftTab("symbols");
     } catch (e) {
       setError(`Could not open ${fileName(path)}: ${e}`);
     } finally {
@@ -111,18 +114,48 @@ export default function App() {
       {elf ? (
         <main className="grid min-h-0 flex-1 grid-cols-[minmax(300px,30%)_1fr]">
           <section className="flex min-h-0 flex-col border-r border-rule">
-            <div className="min-h-0 flex-1">
-              <SymbolTree
-                roots={elf.roots}
-                selected={selected}
-                onSelect={setSelected}
-                onWatch={onWatch}
-                watched={watchedPaths}
-              />
+            <div role="tablist" className="flex gap-1 border-b border-rule bg-panel px-2 pt-1.5">
+              {(["symbols", "tune"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  role="tab"
+                  aria-selected={leftTab === tab}
+                  onClick={() => setLeftTab(tab)}
+                  className={`rounded-t-sm border border-b-0 px-3 py-1 ${
+                    leftTab === tab ? "border-rule bg-surface text-ink" : "border-transparent text-muted hover:text-ink"
+                  }`}
+                >
+                  {tab === "symbols" ? "Symbols" : `Tune${elf.catalog ? ` (${elf.catalog.entries.length})` : ""}`}
+                </button>
+              ))}
             </div>
-            <div className="max-h-[40%] shrink-0 overflow-auto border-t border-rule bg-surface">
-              <NodeDetails node={selected} roots={elf.roots} onWatch={onWatch} />
-            </div>
+            {leftTab === "symbols" ? (
+              <>
+                <div className="min-h-0 flex-1">
+                  <SymbolTree
+                    roots={elf.roots}
+                    selected={selected}
+                    onSelect={setSelected}
+                    onWatch={onWatch}
+                    watched={watchedPaths}
+                  />
+                </div>
+                <div className="max-h-[40%] shrink-0 overflow-auto border-t border-rule bg-surface">
+                  <NodeDetails node={selected} roots={elf.roots} onWatch={onWatch} />
+                </div>
+              </>
+            ) : (
+              <div className="min-h-0 flex-1 bg-surface">
+                <TunePanel
+                  catalog={elf.catalog}
+                  catalogError={elf.catalogError}
+                  tune={session.tune}
+                  connected={connected}
+                  watched={watchedPaths}
+                  onWatch={watch.addCell}
+                />
+              </div>
+            )}
           </section>
           <section className="grid min-h-0 grid-rows-[minmax(0,3fr)_minmax(0,2fr)] bg-surface">
             <div className="min-h-0 border-b border-rule">

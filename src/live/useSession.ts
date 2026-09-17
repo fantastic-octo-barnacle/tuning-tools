@@ -10,10 +10,16 @@ export interface Link {
   message: string | null;
 }
 
+export interface Tune {
+  check: api.CatalogCheck;
+  values: Map<number, api.TuneValue>;
+}
+
 export function useSession() {
   const [link, setLink] = useState<Link>({ state: "idle", message: null });
   const [stats, setStats] = useState<api.Stats | null>(null);
   const [logs, setLogs] = useState<api.LogLine[]>([]);
+  const [tune, setTune] = useState<Tune | null>(null);
   // Events from a replaced connection are ignored
   const generation = useRef(0);
 
@@ -23,6 +29,7 @@ export function useSession() {
     samples.clear();
     setStats(null);
     setLogs([]);
+    setTune(null);
     setLink({ state: "connecting", message: null });
 
     const data = new Channel<ArrayBuffer>((frame) => {
@@ -32,7 +39,12 @@ export function useSession() {
       if (!live()) return;
       if (event.type === "status") {
         setLink({ state: event.state, message: event.message });
-        if (event.state !== "connected") setStats(null);
+        if (event.state !== "connected") {
+          setStats(null);
+          setTune(null);
+        }
+      } else if (event.type === "tune") {
+        setTune({ check: event.check, values: new Map(event.values.map((v) => [v.id, v])) });
       } else if (event.type === "stats") {
         setStats(event);
       } else {
@@ -51,11 +63,12 @@ export function useSession() {
 
   const disconnect = useCallback(async () => {
     await api.disconnect();
+    setTune(null);
     // The session reports `disconnected` itself; this covers a session that never started
     setLink((l) => (l.state === "connecting" || l.state === "connected" ? l : { state: "idle", message: null }));
   }, []);
 
   const clearLogs = useCallback(() => setLogs([]), []);
 
-  return { link, stats, logs, connect, disconnect, clearLogs };
+  return { link, stats, logs, tune, connect, disconnect, clearLogs };
 }

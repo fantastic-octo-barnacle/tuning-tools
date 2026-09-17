@@ -77,10 +77,35 @@ export interface ElfSummary {
   };
 }
 
+export type CellKind = "f32" | "i32" | "u32" | "bool";
+
+export interface CatalogEntry {
+  id: number;
+  name: string;
+  unit: string;
+  kind: CellKind;
+  access: "readOnly" | "live";
+  default: number;
+  min: number | null;
+  max: number | null;
+  maxStep: number | null;
+  requestedAddress: number;
+  appliedAddress: number;
+}
+
+export interface Catalog {
+  address: number;
+  symbol: string;
+  entries: CatalogEntry[];
+}
+
 export interface OpenedElf {
   summary: ElfSummary;
   roots: RootNode[];
   parseMs: number;
+  /** The firmware's tuning table, when it declares one */
+  catalog: Catalog | null;
+  catalogError: string | null;
 }
 
 export const inDesktopApp = isTauri;

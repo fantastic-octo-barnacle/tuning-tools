@@ -77,13 +77,17 @@ ride the probe, so it belongs with USB, not with memory polling.
 ### One catalog, two discovery paths
 
 The firmware publishes a **descriptor table**: one `static` per watchable or
-tunable value, collected into a linker section (`linkme::distributed_slice`),
-each with a stable 32-bit id (FNV-1a of `component.name` `[rs]`), name, unit,
+tunable value, listed in one `static TABLE: Table` (magic `RMTT`, format
+version), each with a stable 32-bit id (FNV-1a of `component.name` `[rs]`), name, unit,
 type tag, min/max/step, write policy, and a pointer to an atomic cell.
 
 - Over `TelemetrySource` the firmware serves the table in CATALOG pages.
-- Over `MemPollSource` the host finds the table's start/end symbols in the
-  ELF and reads the descriptors out of RAM, then polls the cells directly.
+- Over `MemPollSource` the host finds the table by its DWARF type (a struct
+  named `Table` with `magic`, `version` and `entries`), decodes the
+  descriptors by field name from the ELF file itself (they are initialised
+  statics), and polls the cells directly. Before any write it reads the
+  target's table and refuses unless it equals the ELF's, so a stale ELF cannot
+  aim a write at unrelated memory.
 
 Same ids, same names, same units on both paths, so a saved layout or tune
 profile works whichever carrier is plugged in. Raw DWARF variables remain
@@ -219,9 +223,11 @@ Each milestone ends in something usable on a real robot.
 
 - **Leases.** One session covering both planes. RM Studio's two-lease
   isolation `[rs]` buys little once frames carry a sequence number.
-- **Descriptor collection.** `linkme` distributed slice. Fall back to a
-  `build.rs`-generated table only if the linker section fights the existing
-  memory layouts.
+- **Descriptor collection.** Settled in M2: one hand-listed `Table` static.
+  `linkme` needs `unsafe` link sections, which `#![forbid(unsafe_code)]` in
+  the robot crates rules out, and one list per firmware is short enough to
+  review. `Table::validate` at boot rejects duplicate ids and keeps the table
+  linked.
 - **F64.** Not in the wire format. Cortex-M4F/M7 firmware has no use for it;
   the host widens.
 - **OpenOCD.** Keep the carrier stub, do not spend on it.

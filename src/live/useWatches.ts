@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { NodeRef, OpenedElf, Scalar, SymbolNode } from "../elf/api";
+import { CatalogEntry, NodeRef, OpenedElf, Scalar, SymbolNode } from "../elf/api";
 import * as api from "./api";
 import { samples } from "./samples";
 
@@ -7,7 +7,10 @@ export const MAX_TRACES = 8;
 
 export interface Watch {
   id: number;
-  ref: NodeRef;
+  /** The symbol sampled; null for a tuning table value */
+  ref: NodeRef | null;
+  /** Tuning table value id, sampled as the value the firmware applies */
+  cell: number | null;
   path: string;
   typeName: string;
   scalar: Scalar | null;
@@ -18,13 +21,14 @@ export interface Watch {
   trace: number | null;
 }
 
-type Stored = Pick<Watch, "ref" | "path" | "typeName" | "scalar" | "plotted">;
+type Stored = Pick<Watch, "ref" | "cell" | "path" | "typeName" | "scalar" | "plotted">;
 
 const storageKey = (elfPath: string) => `watches:${elfPath}`;
 
 function load(elfPath: string): Stored[] {
   try {
-    return JSON.parse(localStorage.getItem(storageKey(elfPath)) ?? "[]");
+    const stored: Stored[] = JSON.parse(localStorage.getItem(storageKey(elfPath)) ?? "[]");
+    return stored.map((s) => ({ ...s, ref: s.ref ?? null, cell: s.cell ?? null }));
   } catch {
     return [];
   }
@@ -70,7 +74,7 @@ export function useWatches(elf: OpenedElf | null) {
   useEffect(() => {
     if (!ready) return;
     api
-      .setWatches(watches.map((w) => ({ id: w.id, node: w.ref })))
+      .setWatches(watches.map((w) => ({ id: w.id, node: w.ref, cell: w.cell })))
       .then((results) => {
         const errors = new Map(results.map((r) => [r.id, r.error]));
         setWatches((ws) => ws.map((w) => (errors.has(w.id) ? { ...w, error: errors.get(w.id) ?? null } : w)));
@@ -83,8 +87,9 @@ export function useWatches(elf: OpenedElf | null) {
   // Save
   useEffect(() => {
     if (!ready || !elfPath) return;
-    const stored: Stored[] = watches.map(({ ref, path, typeName, scalar, plotted }) => ({
+    const stored: Stored[] = watches.map(({ ref, cell, path, typeName, scalar, plotted }) => ({
       ref,
+      cell,
       path,
       typeName,
       scalar,
@@ -98,25 +103,36 @@ export function useWatches(elf: OpenedElf | null) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, ready]);
 
-  const add = useCallback((nodes: SymbolNode[]) => {
+  const addWatches = useCallback((items: Omit<Watch, "id" | "plotted" | "error" | "trace">[]) => {
     setWatches((ws) => {
       const have = new Set(ws.map((w) => w.path));
       let plotted = ws.filter((w) => w.plotted).length;
-      const added = nodes
-        .filter((n) => !have.has(n.path))
-        .map((n) => ({
-          id: nextId++,
-          ref: n.ref,
-          path: n.path,
-          typeName: n.typeName,
-          scalar: n.scalar,
-          plotted: plotted++ < MAX_TRACES,
-          error: null,
-          trace: null,
-        }));
+      const added = items
+        .filter((item) => !have.has(item.path))
+        .map((item) => ({ ...item, id: nextId++, plotted: plotted++ < MAX_TRACES, error: null, trace: null }));
       return assignTraces(ws.concat(added));
     });
   }, []);
+
+  const add = useCallback(
+    (nodes: SymbolNode[]) =>
+      addWatches(nodes.map((n) => ({ ref: n.ref, cell: null, path: n.path, typeName: n.typeName, scalar: n.scalar }))),
+    [addWatches],
+  );
+
+  const addCell = useCallback(
+    (entry: CatalogEntry) =>
+      addWatches([
+        {
+          ref: null,
+          cell: entry.id,
+          path: entry.name,
+          typeName: entry.unit ? `${entry.kind}, ${entry.unit}` : entry.kind,
+          scalar: entry.kind,
+        },
+      ]),
+    [addWatches],
+  );
 
   const remove = useCallback((id: number) => {
     samples.forget(id);
@@ -141,5 +157,5 @@ export function useWatches(elf: OpenedElf | null) {
     });
   }, []);
 
-  return { watches, add, remove, clear, togglePlot };
+  return { watches, add, addCell, remove, clear, togglePlot };
 }

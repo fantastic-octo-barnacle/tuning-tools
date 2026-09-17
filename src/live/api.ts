@@ -41,10 +41,23 @@ export interface LogLine {
   module: string | null;
 }
 
+export type CatalogCheck =
+  | { state: "checking" }
+  | { state: "matches" }
+  | { state: "differs"; message: string };
+
+export interface TuneValue {
+  id: number;
+  /** null when the cell could not be read */
+  requested: number | null;
+  applied: number | null;
+}
+
 export type SessionEvent =
   | { type: "status"; state: LinkState; message: string | null }
   | ({ type: "stats" } & Stats)
-  | { type: "log"; lines: LogLine[] };
+  | { type: "log"; lines: LogLine[] }
+  | { type: "tune"; check: CatalogCheck; values: TuneValue[] };
 
 export interface ConnectRequest {
   probe: string | null;
@@ -78,7 +91,10 @@ export interface WatchResult {
   error: string | null;
 }
 
-export function setWatches(watches: { id: number; node: NodeRef }[]): Promise<WatchResult[]> {
+/** A symbol by `node`, or a tuning table value by `cell` id */
+export type WatchTarget = { id: number; node: NodeRef | null; cell: number | null };
+
+export function setWatches(watches: WatchTarget[]): Promise<WatchResult[]> {
   return invoke("session_set_watches", { watches });
 }
 
@@ -88,4 +104,9 @@ export function setRate(hz: number): Promise<void> {
 
 export function watchableLeaves(node: NodeRef): Promise<SymbolNode[]> {
   return invoke("watchable_leaves", { node });
+}
+
+/** Ask the firmware to run tuning value `id` at `value`; rejects with the reason it was not written. */
+export function requestValue(id: number, value: number): Promise<void> {
+  return invoke("session_request", { id, value });
 }

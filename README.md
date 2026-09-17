@@ -10,12 +10,17 @@ Architecture notes on the projects it draws from are in
 
 ## Status
 
-M1. `studio-dwarf` parses C, C++ and Rust firmware ELFs (symbols, DWARF
+M2. `studio-dwarf` parses C, C++ and Rust firmware ELFs (symbols, DWARF
 types, Rust enums with data, rebuild diff). The app browses statics as a
 module tree, attaches to a running target through a debug probe (probe-rs,
 no halt, no reset), samples watched numbers on absolute deadlines, plots them,
 and shows the firmware's defmt log from RTT. No firmware change is needed.
-Writing values and the framed protocol come in M2 and M3.
+
+A firmware that declares an `rm-telemetry` table gets a Tune tab: its gains
+and published state by name, unit and range. The app decodes the table from
+the ELF, checks that the target runs that build before it writes, and sends
+requests over SWD; the firmware applies them inside its declared range and
+step. The framed protocol, saving values and USB come in M3.
 
 ## Develop
 

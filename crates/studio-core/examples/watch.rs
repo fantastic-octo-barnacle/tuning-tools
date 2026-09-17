@@ -2,17 +2,21 @@
 //!
 //! ```text
 //! cargo run -p studio-core --example watch -- --chip STM32H723VG --elf <firmware> \
-//!     [--probe VID:PID[:SERIAL]] [--speed 4000] [--rate 200] [--secs 5] [--list] <symbol path>...
+//!     [--probe VID:PID[:SERIAL]] [--speed 4000] [--rate 200] [--secs 5] [--list] \
+//!     [--tune <table value name>=<value>] <symbol path>...
 //! ```
 //! `--list` prints RAM statics with numeric types instead of sampling.
+//! `--tune` requests a tuning table value after one second and prints it each second.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use studio_carriers::probe::{list_probes, ProbeConfig, ProbeLink};
 use studio_carriers::Link;
+use studio_core::catalog::{ElfImage, TableLayout};
 use studio_core::frame;
 use studio_core::session::SessionOptions;
+use studio_core::tune::CatalogCheck;
 use studio_core::{ReadItem, Session, SessionCommand, SessionEvent, SessionSink};
 use studio_dwarf::tree::{self, NodeKind};
 use studio_dwarf::{ElfParser, NodeRef};
@@ -20,6 +24,7 @@ use studio_dwarf::{ElfParser, NodeRef};
 struct Print {
     last: Mutex<Vec<(u32, f64)>>,
     ticks: Mutex<usize>,
+    tune: Mutex<Option<SessionEvent>>,
 }
 
 impl SessionSink for Print {
@@ -46,6 +51,7 @@ impl SessionSink for Print {
                     );
                 }
             }
+            tune @ SessionEvent::Tune { .. } => *self.tune.lock().unwrap() = Some(tune),
             other => println!("{other:?}"),
         }
     }
@@ -56,6 +62,7 @@ fn main() {
     let (mut chip, mut elf_path, mut probe, mut speed) = (None, None, None, None);
     let (mut rate, mut secs, mut list) = (200.0, 5u64, false);
     let mut symbols = Vec::new();
+    let mut tune = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--chip" => chip = args.next(),
@@ -65,6 +72,7 @@ fn main() {
             "--rate" => rate = args.next().unwrap().parse().unwrap(),
             "--secs" => secs = args.next().unwrap().parse().unwrap(),
             "--list" => list = true,
+            "--tune" => tune = args.next(),
             _ => symbols.push(a),
         }
     }
@@ -116,6 +124,7 @@ fn main() {
     let sink = Arc::new(Print {
         last: Mutex::new(Vec::new()),
         ticks: Mutex::new(0),
+        tune: Mutex::new(None),
     });
     let session = Session::spawn(
         move || ProbeLink::open(&config).map(|l| Box::new(l) as Box<dyn Link>),
@@ -127,7 +136,46 @@ fn main() {
         sink.clone(),
     );
     session.send(SessionCommand::SetWatches(items));
-    for _ in 0..secs {
+    let tune = tune.map(|arg| {
+        let (name, value) = arg.split_once('=').expect("--tune <name>=<value>");
+        let layout = TableLayout::find(&elf).unwrap().expect("a tuning table");
+        let mut image = ElfImage::parse(&std::fs::read(&elf_path).unwrap()).unwrap();
+        let catalog = layout.read(&mut image).unwrap();
+        let entry = catalog
+            .entries
+            .iter()
+            .find(|e| e.name == name)
+            .expect("a value with that name")
+            .clone();
+        session.send(SessionCommand::SetCatalog(Some(Box::new((
+            layout, catalog,
+        )))));
+        (entry, value.parse::<f64>().unwrap())
+    });
+    for sec in 0..secs {
+        if let (1, Some((entry, value))) = (sec, &tune) {
+            let (reply, rx) = std::sync::mpsc::sync_channel(1);
+            session.send(SessionCommand::Request {
+                id: entry.id,
+                value: *value,
+                reply,
+            });
+            println!("request {} = {value}: {:?}", entry.name, rx.recv().unwrap());
+        }
+        if let (Some((entry, _)), Some(SessionEvent::Tune { check, values })) =
+            (&tune, sink.tune.lock().unwrap().as_ref())
+        {
+            let v = values.iter().find(|v| v.id == entry.id).unwrap();
+            let check = match check {
+                CatalogCheck::Differs { message } => message.as_str(),
+                CatalogCheck::Matches => "matches",
+                CatalogCheck::Checking => "checking",
+            };
+            println!(
+                "tune {check}: requested {:?} applied {:?}",
+                v.requested, v.applied
+            );
+        }
         std::thread::sleep(Duration::from_secs(1));
         println!(
             "ticks {:>6}  values {:?}",

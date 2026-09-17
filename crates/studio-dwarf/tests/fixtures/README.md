@@ -74,5 +74,18 @@ RUSTC_BOOTSTRAP=1 RUSTFLAGS="-C link-arg=-Tlink.x -Z unstable-options -C symbol-
 cp target-legacy/thumbv7em-none-eabihf/release/rust_fixture ../rust_legacy.elf
 ```
 
+### ../../../studio-core/tests/fixtures/rm_telemetry.elf
+The `telemetry` binary of the same project: an `rm_telemetry::Table` with two
+tunables and four watches of every cell kind, for the catalog decoder in
+`studio-core`. `src/bin/telemetry/rm_telemetry.rs` is a copy of the
+`rm-embedded-rs` crate's `src/lib.rs` without its tests and crate attributes;
+refresh it when the firmware crate changes its layout.
+
+```bash
+cd tests/fixtures/rust_embedded
+cargo build --release --bin telemetry
+cp target/thumbv7em-none-eabihf/release/telemetry ../../../../studio-core/tests/fixtures/rm_telemetry.elf
+```
+
 Built with rustc 1.98.1. Type names such as `Atomic<u32>` follow the core
 library of that toolchain; rebuilding with another toolchain may change them.
