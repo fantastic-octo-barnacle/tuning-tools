@@ -1,5 +1,6 @@
 /// Numeric storage types used by the migrated DWARF type table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum VariableType {
     U8,
     U16,

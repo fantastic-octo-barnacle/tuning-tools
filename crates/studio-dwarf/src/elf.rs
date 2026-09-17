@@ -40,6 +40,8 @@ pub struct SymbolInfo {
     pub section: String,
     /// Whether this is a global symbol
     pub is_global: bool,
+    /// Address lies in an allocated, writable section (RAM that changes at runtime)
+    pub writable: bool,
     /// Type ID referencing the type table (if available)
     pub type_id: Option<TypeId>,
     /// Status indicating why this variable can or cannot be read (from DWARF)
@@ -466,7 +468,48 @@ impl ElfParser {
             tracing::debug!("DWARF parsing failed or not available: {}", e);
         }
 
+        Self::assign_sections(&file, &mut info);
+
         Ok(info)
+    }
+
+    /// Place every symbol in the section containing its address. Symbols added from
+    /// DWARF have no section index, and a symbol's own section may be non-allocated
+    /// metadata (`.defmt`), so writability comes from the section headers.
+    fn assign_sections(file: &object::File, info: &mut ElfInfo) {
+        let sections: Vec<(u64, u64, String, bool)> = file
+            .sections()
+            .filter_map(|s| {
+                let object::SectionFlags::Elf { sh_flags } = s.flags() else {
+                    return None;
+                };
+                let alloc = sh_flags & u64::from(object::elf::SHF_ALLOC) != 0;
+                let write = sh_flags & u64::from(object::elf::SHF_WRITE) != 0;
+                alloc.then(|| {
+                    (
+                        s.address(),
+                        s.size(),
+                        s.name().unwrap_or("").to_string(),
+                        write,
+                    )
+                })
+            })
+            .collect();
+
+        for symbol in &mut info.symbols {
+            let containing = sections.iter().find(|(addr, size, _, _)| {
+                symbol.address >= *addr && symbol.address < addr + (*size).max(1)
+            });
+            match containing {
+                Some((_, _, name, write)) => {
+                    if symbol.section.is_empty() {
+                        symbol.section = name.clone();
+                    }
+                    symbol.writable = *write;
+                }
+                None => symbol.writable = false,
+            }
+        }
     }
 
     /// Parse DWARF debug information and populate the type table
@@ -582,6 +625,7 @@ impl ElfParser {
                 symbol_type: SymbolType::Variable,
                 section: String::new(),
                 is_global: dwarf_sym.is_global,
+                writable: false,
                 type_id: Some(dwarf_sym.type_id),
                 status: Some(dwarf_sym.status.clone()),
             });
@@ -685,6 +729,7 @@ impl ElfParser {
             symbol_type,
             section,
             is_global,
+            writable: false,
             type_id: None,
             status: None,
         })

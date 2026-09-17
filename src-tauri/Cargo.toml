@@ -23,5 +23,6 @@ tauri-plugin-opener = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 studio-dwarf = { path = "../crates/studio-dwarf" }
+tauri-plugin-dialog = "2"
 
 

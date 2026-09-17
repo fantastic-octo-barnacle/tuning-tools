@@ -54,6 +54,7 @@ fn statics_resolve_by_full_path_with_rust_type_names() {
                 .unwrap_or_else(|| panic!("{label}: {path} not found"));
             assert_eq!(sym.symbol_type, SymbolType::Variable, "{label}: {path}");
             assert!(sym.is_readable(), "{label}: {path}");
+            assert!(sym.writable, "{label}: {path} should be in RAM");
             assert_eq!(elf.get_symbol_type_name(sym), *type_name, "{label}: {path}");
         }
     }
@@ -247,6 +248,13 @@ fn real_firmware_elf() {
         .filter(|s| s.is_readable() && s.type_id.is_some() && s.demangled_name.contains("::"))
         .collect();
     assert!(!statics.is_empty(), "no typed Rust statics in {path}");
+    assert!(
+        elf.symbols
+            .iter()
+            .filter(|s| s.section == ".defmt")
+            .all(|s| !s.writable),
+        "defmt metadata is not RAM"
+    );
     for s in &statics {
         assert!(!s.demangled_name.contains('['), "{}", s.demangled_name);
         let _ = elf.get_symbol_type_name(s);

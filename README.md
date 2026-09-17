@@ -10,7 +10,10 @@ Architecture notes on the projects it draws from are in
 
 ## Status
 
-Scaffold only. Nothing beyond the Tauri template runs yet.
+M0 in progress. `studio-dwarf` parses C, C++ and Rust firmware ELFs (symbols,
+DWARF types, Rust enums with data, rebuild diff). The app opens an ELF and
+browses its statics as a module tree with addresses, sizes and types.
+No probe or serial connection yet.
 
 ## Develop
 
@@ -18,7 +21,19 @@ Scaffold only. Nothing beyond the Tauri template runs yet.
 npm install
 npm run tauri dev        # desktop app with native probe/serial access
 npm run dev              # frontend only, no hardware
-cargo check --manifest-path src-tauri/Cargo.toml
+cargo test --workspace   # parser tests against fixtures in crates/studio-dwarf/tests
+```
+
+Open an ELF at startup instead of through the file dialog:
+
+```bash
+TUNING_TOOLS_ELF=path/to/firmware npm run tauri dev
+```
+
+Check the parser against a real firmware build:
+
+```bash
+STUDIO_DWARF_ELF=path/to/firmware cargo test -p studio-dwarf -- --ignored
 ```
 
 Requires Rust stable, Node 20+, and the platform Tauri prerequisites.
@@ -28,6 +43,6 @@ Requires Rust stable, Node 20+, and the platform Tauri prerequisites.
 ```
 src/            React frontend (widgets, layout, data plane consumer)
 src-tauri/      Tauri host: commands, event/channel bridge to studio-core
-crates/         Rust workspace crates (planned; see FRAME.md)
+crates/         Rust workspace crates: studio-dwarf (ELF/DWARF); more planned, see FRAME.md
 docs/           design records and reference notes
 ```

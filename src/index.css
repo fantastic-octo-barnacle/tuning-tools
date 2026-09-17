@@ -1,0 +1,74 @@
+@import "tailwindcss";
+
+:root {
+  --panel: #e4e6e1;
+  --surface: #f3f4f1;
+  --sunken: #d7dad3;
+  --rule: #c3c7bf;
+  --ink: #1f2528;
+  --muted: #5d666a;
+  --led: #b87800;
+  --led-wash: #f1dfb4;
+  --scalar: #2f5f86;
+  --enum: #7a4a78;
+  --danger: #a33a2c;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --panel: #22272a;
+    --surface: #2b3134;
+    --sunken: #1b1f21;
+    --rule: #3c4447;
+    --ink: #e2e5e1;
+    --muted: #97a0a3;
+    --led: #f0a91f;
+    --led-wash: #4a3b17;
+    --scalar: #8db8dc;
+    --enum: #cf9fcc;
+    --danger: #f08a78;
+    color-scheme: dark;
+  }
+}
+
+@theme inline {
+  --color-panel: var(--panel);
+  --color-surface: var(--surface);
+  --color-sunken: var(--sunken);
+  --color-rule: var(--rule);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-led: var(--led);
+  --color-led-wash: var(--led-wash);
+  --color-scalar: var(--scalar);
+  --color-enum: var(--enum);
+  --color-danger: var(--danger);
+  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--panel);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--led);
+  outline-offset: -2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}
