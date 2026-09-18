@@ -7,7 +7,8 @@ use std::time::Instant;
 
 use serde::Serialize;
 use studio_core::catalog::{Catalog, ElfImage, TableLayout};
-use studio_dwarf::tasks::{self, Task};
+use studio_dwarf::task_stats::StatsLayout;
+use studio_dwarf::tasks::{self, Task, TaskProbe};
 use studio_dwarf::tree::{self, Children, ElfSummary, RootNode};
 use studio_dwarf::{ElfInfo, ElfParser, NodeRef};
 use tauri::State;
@@ -15,21 +16,39 @@ use tauri::State;
 use crate::session::SessionState;
 
 pub type Tuning = Arc<(TableLayout, Catalog)>;
+/// How to read each task's state, as `(task path, slot address, probe)`,
+/// worked out once per ELF
+pub type TaskProbes = Arc<Vec<(String, u64, Result<TaskProbe, String>)>>;
+
+/// The firmware's per-task counters: `None` when it has none, or why they cannot be read
+pub type TaskStats = Option<Result<Arc<StatsLayout>, String>>;
+
+#[derive(Clone)]
+struct Loaded {
+    elf: Arc<ElfInfo>,
+    tuning: Option<Tuning>,
+    probes: TaskProbes,
+    stats: TaskStats,
+}
 
 #[derive(Default)]
-pub struct LoadedElf(Mutex<Option<(Arc<ElfInfo>, Option<Tuning>)>>);
+pub struct LoadedElf(Mutex<Option<Loaded>>);
 
 impl LoadedElf {
     pub fn current(&self) -> Result<Arc<ElfInfo>, String> {
-        self.loaded().map(|(elf, _)| elf)
+        self.loaded().map(|l| l.elf)
     }
 
     /// The ELF's tuning table, when it declares one
     pub fn tuning(&self) -> Result<Option<Tuning>, String> {
-        self.loaded().map(|(_, tuning)| tuning)
+        self.loaded().map(|l| l.tuning)
     }
 
-    fn loaded(&self) -> Result<(Arc<ElfInfo>, Option<Tuning>), String> {
+    pub fn task_probes(&self) -> Result<(TaskProbes, TaskStats), String> {
+        self.loaded().map(|l| (l.probes, l.stats))
+    }
+
+    fn loaded(&self) -> Result<Loaded, String> {
         self.0
             .lock()
             .expect("elf state poisoned")
@@ -70,16 +89,33 @@ pub async fn open_elf(
         Ok(tuning) => (tuning.map(Arc::new), None),
         Err(e) => (None, Some(e)),
     };
+    let tasks = tasks::tasks(&elf);
+    let probes = tasks
+        .iter()
+        .map(|t| {
+            let probe = tasks::probe(&elf, &t.root.node.node).map_err(|e| e.to_string());
+            (t.root.node.path.clone(), t.root.node.address, probe)
+        })
+        .collect();
+    let stats = StatsLayout::find(&elf)
+        .map_err(|e| e.to_string())
+        .transpose()
+        .map(|s| s.map(Arc::new));
     let opened = OpenedElf {
         summary: tree::summary(&elf),
         roots: tree::roots(&elf),
-        tasks: tasks::tasks(&elf),
+        tasks,
         parse_ms: started.elapsed().as_millis() as u64,
         catalog: tuning.as_ref().map(|t| t.1.clone()),
         catalog_error,
     };
     session.set_tuning(tuning.clone());
-    *state.0.lock().expect("elf state poisoned") = Some((elf, tuning));
+    *state.0.lock().expect("elf state poisoned") = Some(Loaded {
+        elf,
+        tuning,
+        probes: Arc::new(probes),
+        stats,
+    });
     Ok(opened)
 }
 

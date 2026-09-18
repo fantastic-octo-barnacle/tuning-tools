@@ -13,7 +13,7 @@
 use serde::Serialize;
 
 use crate::elf::ElfInfo;
-use crate::tree::{self, split_path, NodeKind, NodeRef, RootNode, Step, TreeError};
+use crate::tree::{self, split_path, NodeKind, NodeRef, RootNode, Step, SymbolNode, TreeError};
 use crate::type_table::{SourceLocation, TypeDef, TypeId, TypeTable};
 
 /// One slot of a task pool: a task that can run once at a time.
@@ -28,6 +28,11 @@ pub struct Task {
     pub slot: u64,
     /// Slots in the pool: `pool_size` in `#[task(pool_size = N)]`
     pub slots: u64,
+    /// Bytes of the `async fn`'s future: its arguments and the locals it keeps
+    /// across an `.await`. embassy tasks share one stack, so this is a task's RAM.
+    pub future_size: Option<u64>,
+    /// The states the future can be in, in declaration order
+    pub states: Vec<TaskPoint>,
 }
 
 /// The storage type behind a task pool.
@@ -72,6 +77,10 @@ pub fn tasks(elf: &ElfInfo) -> Vec<Task> {
             node.status = sym.unreadable_reason().map(str::to_string);
             let mut segments = module.clone();
             segments.push(label);
+            let future = tree::node(elf, &node.node.child(Step::Member("future".into())));
+            let states = states(elf, &node.node.child(Step::Member("future".into())))
+                .map(|(_, points)| points.into_iter().map(|(_, p)| p).collect())
+                .unwrap_or_default();
             out.push(Task {
                 root: RootNode {
                     node,
@@ -83,6 +92,8 @@ pub fn tasks(elf: &ElfInfo) -> Vec<Task> {
                 name: name.clone(),
                 slot,
                 slots: storage.slots,
+                future_size: future.ok().and_then(|f| f.size),
+                states,
             });
         }
     }
@@ -160,7 +171,7 @@ struct Tag {
     address: u64,
     size: usize,
     little_endian: bool,
-    points: Vec<(Option<u64>, TaskPoint)>,
+    points: Vec<VariantPoint>,
 }
 
 /// A live task's state, decoded from [`TaskProbe::regions`].
@@ -183,6 +194,9 @@ pub struct TaskPoint {
     pub label: String,
     /// The variant's node path, to find it in the tree
     pub path: String,
+    /// The variant node; its children are the state's locals
+    #[serde(rename = "ref")]
+    pub node: NodeRef,
     /// The `.await` a suspended task is parked on
     pub location: Option<SourceLocation>,
 }
@@ -220,45 +234,53 @@ pub fn probe(elf: &ElfInfo, task: &NodeRef) -> Result<TaskProbe, TreeError> {
     };
 
     let future = task.child(Step::Member("future".into()));
-    let tag = match tree::node(elf, &future) {
-        Ok(f) if f.kind == NodeKind::TaggedEnum => {
-            let children = tree::children(elf, &future, None)?;
-            let discriminant = children
-                .nodes
-                .iter()
-                .find(|c| c.node.steps.last() == Some(&Step::Discriminant));
-            discriminant.and_then(|d| {
-                Some(Tag {
-                    address: d.address,
-                    size: usize::try_from(d.size?)
-                        .ok()
-                        .filter(|s| (1..=8).contains(s))?,
-                    little_endian: elf.is_little_endian,
-                    points: children
-                        .nodes
-                        .iter()
-                        .filter(|c| matches!(c.node.steps.last(), Some(Step::Variant(_))))
-                        .map(|c| {
-                            (
-                                c.discr_value,
-                                TaskPoint {
-                                    label: c.label.clone(),
-                                    path: c.path.clone(),
-                                    location: c.location.clone(),
-                                },
-                            )
-                        })
-                        .collect(),
-                })
-            })
-        }
-        _ => None,
-    };
+    let tag = states(elf, &future).and_then(|(discriminant, points)| {
+        Some(Tag {
+            address: discriminant.address,
+            size: usize::try_from(discriminant.size?)
+                .ok()
+                .filter(|s| (1..=8).contains(s))?,
+            little_endian: elf.is_little_endian,
+            points,
+        })
+    });
     Ok(TaskProbe {
         spawned,
         queued,
         tag,
     })
+}
+
+/// A future state and the tag value that selects it; `None` for the default variant
+type VariantPoint = (Option<u64>, TaskPoint);
+
+/// The future's discriminant and its variants, keyed by the tag value that
+/// selects each (`None` for the default variant). `None` when the future is
+/// not a tagged enum.
+fn states(elf: &ElfInfo, future: &NodeRef) -> Option<(SymbolNode, Vec<VariantPoint>)> {
+    let node = tree::node(elf, future).ok()?;
+    if node.kind != NodeKind::TaggedEnum {
+        return None;
+    }
+    let children = tree::children(elf, future, None).ok()?;
+    let mut discriminant = None;
+    let mut points = Vec::new();
+    for c in children.nodes {
+        match c.node.steps.last() {
+            Some(Step::Discriminant) => discriminant = Some(c),
+            Some(Step::Variant(_)) => points.push((
+                c.discr_value,
+                TaskPoint {
+                    label: c.label,
+                    path: c.path,
+                    node: c.node,
+                    location: c.location,
+                },
+            )),
+            _ => {}
+        }
+    }
+    Some((discriminant?, points))
 }
 
 impl TaskProbe {
@@ -357,6 +379,15 @@ mod tests {
         let second = find(&tasks, "worker [1]");
         assert_eq!((second.slot, second.slots), (1, 2));
         assert_eq!(second.root.node.address, pool.address + pool.size / 2);
+
+        // The future's size and states come without a probe
+        assert!(blink.future_size.is_some_and(|s| s > 0));
+        let states: Vec<&str> = blink.states.iter().map(|p| p.label.as_str()).collect();
+        assert_eq!(
+            states,
+            ["Unresumed", "Returned", "Panicked", "Suspend0", "Suspend1"]
+        );
+        assert_eq!(blink.states[3].location.as_ref().unwrap().line, 47);
     }
 
     #[test]
@@ -386,7 +417,7 @@ mod tests {
         let suspend0 = &states.nodes[4];
         let at = suspend0.location.as_ref().unwrap();
         assert!(at.file.ends_with("src/main.rs"), "{}", at.file);
-        assert_eq!(at.line, 44);
+        assert_eq!(at.line, 47);
 
         // The arguments live in `Unresumed`, locals across an await in `SuspendN`
         let args = children(&elf, &states.nodes[1].node, None).unwrap();
@@ -456,7 +487,7 @@ mod tests {
         let parked = probe.decode(&[state(true, false), tag(4)]).unwrap();
         let at = parked.at.unwrap();
         assert_eq!(at.label, "Suspend1");
-        assert_eq!(at.location.unwrap().line, 46);
+        assert_eq!(at.location.unwrap().line, 49);
         assert!(at.path.ends_with("POOL[task 0].future#4"), "{}", at.path);
         assert!(tree::node(&elf, &blink).is_ok());
 

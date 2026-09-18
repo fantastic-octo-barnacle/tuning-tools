@@ -10,8 +10,13 @@ publish = false
 [dependencies]
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 cortex-m-rt = "0.7"
-embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread"] }
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread", "trace"] }
 embassy-sync = "0.8"
+
+# `src/rm_task_stats.rs` gates its trace hooks on this, as the firmware crate does
+[features]
+default = ["embassy"]
+embassy = []
 
 [profile.release]
 debug = 2

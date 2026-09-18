@@ -82,6 +82,10 @@ version rm-embedded-rs uses, for the task view: `main`, `blink::blink_task`
 small; dependencies carry no debug info, as the task types are described by
 the fixture's own compile unit. `tasks.rs` tests check the `.await` line
 numbers in `src/main.rs`, so update them when the source moves.
+`src/rm_task_stats.rs` is a copy of rm-embedded-rs' `rm-task-stats` crate
+(`src/lib.rs` without its tests and `#![no_std]`), with embassy-executor's
+`trace` feature on, for `task_stats.rs`; refresh it when that crate changes its
+layout.
 
 ```bash
 cd tests/fixtures/embassy_tasks

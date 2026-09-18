@@ -77,6 +77,22 @@ export interface Task {
   name: string;
   slot: number;
   slots: number;
+  /** Bytes of the `async fn`'s future: its RAM, as embassy tasks share one stack */
+  futureSize: number | null;
+  /** The states its future can be in, in declaration order */
+  states: TaskPoint[];
+}
+
+/** One state of an `async fn`'s future */
+export interface TaskPoint {
+  /** `Unresumed`, `Returned`, `Panicked`, or `Suspend0`, `Suspend1`, … */
+  label: string;
+  /** The future's variant node path */
+  path: string;
+  /** The variant node; its children are the state's locals */
+  ref: NodeRef;
+  /** The `.await` a suspended task is parked on */
+  location: SourceLocation | null;
 }
 
 export interface Children {

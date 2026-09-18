@@ -1,5 +1,6 @@
 //! Embassy fixture for studio-dwarf's task view: tasks with arguments, locals
-//! held across `.await`, several `.await` points, and a pool of two.
+//! held across `.await`, several `.await` points, and a pool of two, counted
+//! by a copy of rm-embedded-rs' `rm-task-stats`.
 #![no_std]
 #![no_main]
 
@@ -13,6 +14,8 @@ use core::task::Poll;
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
+
+mod rm_task_stats;
 
 pub static TICKS: Signal<CriticalSectionRawMutex, u32> = Signal::new();
 pub static HANDLED: AtomicU32 = AtomicU32::new(0);
@@ -61,6 +64,7 @@ async fn worker(id: u8) {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+    rm_task_stats::init(64_000_000);
     spawner.spawn(blink::blink_task(3).unwrap());
     spawner.spawn(worker(0).unwrap());
     spawner.spawn(worker(1).unwrap());

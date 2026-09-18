@@ -4,7 +4,7 @@
 
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use studio_carriers::probe::{self, ProbeConfig, ProbeInfo, ProbeLink};
@@ -12,10 +12,11 @@ use studio_carriers::serial::{self, PortInfo, SerialStream};
 use studio_carriers::{ByteStream, Link};
 use studio_core::catalog::{Catalog, TableLayout};
 use studio_core::link::{spawn_link, LinkOptions};
-use studio_core::plan::scalar_len;
+use studio_core::plan::{decode, scalar_len};
 use studio_core::session::SessionOptions;
 use studio_core::{ReadItem, Session, SessionCommand, SessionEvent, SessionSink};
-use studio_dwarf::tasks::{self, TaskState};
+use studio_dwarf::task_stats::TaskCounters;
+use studio_dwarf::tasks::TaskState;
 use studio_dwarf::tree::{self, NodeKind};
 use studio_dwarf::{ElfInfo, NodeRef, SymbolNode};
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -435,56 +436,163 @@ pub struct TaskStatus {
     state: Option<TaskState>,
     /// Why the state could not be read
     error: Option<String>,
+    /// The firmware's counters for this task, when it keeps them
+    counters: Option<TaskCounters>,
 }
 
-/// Read every embassy task's state in one pass over target memory.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskSnapshot {
+    tasks: Vec<TaskStatus>,
+    /// Host time of the read, in microseconds from an arbitrary start
+    host_us: u64,
+    /// Whether the firmware links rm-task-stats
+    has_stats: bool,
+    /// Cycle counter frequency, when the counters were read
+    clock_hz: Option<u32>,
+    /// Tasks spawned while every counter slot was taken
+    untracked: u32,
+    /// Why the counters could not be read
+    stats_error: Option<String>,
+}
+
+/// Read every embassy task's state, and the firmware's task counters when it
+/// keeps them, in one pass over target memory.
 #[tauri::command]
 pub async fn session_task_states(
     elf: State<'_, LoadedElf>,
     state: State<'_, SessionState>,
-) -> Result<Vec<TaskStatus>, String> {
-    let elf = elf.current()?;
-    let probes: Vec<_> = tasks::tasks(&elf)
-        .into_iter()
-        .map(|t| {
-            let probe = tasks::probe(&elf, &t.root.node.node).map_err(|e| e.to_string());
-            (t.root.node.path, probe)
-        })
-        .collect();
-    let regions: Vec<(u64, usize)> = probes
+) -> Result<TaskSnapshot, String> {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    let (probes, stats) = elf.task_probes()?;
+    let mut regions: Vec<(u64, usize)> = probes
         .iter()
-        .filter_map(|(_, p)| p.as_ref().ok())
+        .filter_map(|(_, _, p)| p.as_ref().ok())
         .flat_map(|p| p.regions())
         .collect();
-    let (reply, rx) = mpsc::sync_channel(1);
-    if !state.send(SessionCommand::Read { regions, reply }) {
-        return Err("connect a debug probe first".into());
-    }
-    let bytes = tauri::async_runtime::spawn_blocking(move || {
-        rx.recv_timeout(REQUEST_TIMEOUT)
-            .unwrap_or_else(|_| Err("the target did not answer in time".into()))
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-
+    let has_stats = stats.is_some();
+    let layout = match &stats {
+        Some(Ok(layout)) => {
+            regions.push(layout.region());
+            Some(layout.clone())
+        }
+        _ => None,
+    };
+    let bytes = read_once(&state, regions).await?;
+    let host_us = EPOCH.get_or_init(Instant::now).elapsed().as_micros() as u64;
     let mut bytes = bytes.into_iter();
-    Ok(probes
-        .into_iter()
-        .map(|(path, probe)| match probe {
+
+    let tasks: Vec<(String, u64, Option<TaskState>, Option<String>)> = probes
+        .iter()
+        .map(|(path, address, probe)| match probe {
             Ok(probe) => {
                 let mine: Vec<Vec<u8>> = bytes.by_ref().take(probe.regions().len()).collect();
                 let state = probe.decode(&mine);
-                TaskStatus {
-                    path,
-                    error: state.is_none().then(|| "short read".to_string()),
-                    state,
-                }
+                let error = state.is_none().then(|| "short read".to_string());
+                (path.clone(), *address, state, error)
             }
-            Err(error) => TaskStatus {
+            Err(error) => (path.clone(), *address, None, Some(error.clone())),
+        })
+        .collect();
+
+    let reading = layout.map(|layout| {
+        bytes
+            .next()
+            .ok_or_else(|| "short read".to_string())
+            .and_then(|b| layout.decode(&b))
+    });
+    let (reading, stats_error) = match (reading, stats) {
+        (Some(Ok(r)), _) => (Some(r), None),
+        (Some(Err(e)), _) | (None, Some(Err(e))) => (None, Some(e)),
+        (None, _) => (None, None),
+    };
+    Ok(TaskSnapshot {
+        tasks: tasks
+            .into_iter()
+            .map(|(path, address, state, error)| TaskStatus {
+                counters: reading.as_ref().and_then(|r| r.task(address).copied()),
                 path,
-                state: None,
+                state,
+                error,
+            })
+            .collect(),
+        host_us,
+        has_stats,
+        clock_hz: reading.as_ref().map(|r| r.clock_hz),
+        untracked: reading.as_ref().map_or(0, |r| r.untracked),
+        stats_error,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ValueRead {
+    /// `None` when it could not be read
+    value: Option<f64>,
+    error: Option<String>,
+}
+
+/// Read each numeric node once, outside the sampled watch set.
+#[tauri::command]
+pub async fn session_read_values(
+    nodes: Vec<NodeRef>,
+    elf: State<'_, LoadedElf>,
+    state: State<'_, SessionState>,
+) -> Result<Vec<ValueRead>, String> {
+    let elf = elf.current()?;
+    let items: Vec<Result<ReadItem, String>> = nodes
+        .iter()
+        .map(|n| {
+            resolve(&elf, n).and_then(|item| {
+                item.span()
+                    .map(|_| item)
+                    .ok_or_else(|| "not a single number".to_string())
+            })
+        })
+        .collect();
+    let regions: Vec<(u64, usize)> = items
+        .iter()
+        .filter_map(|i| i.as_ref().ok()?.span())
+        .map(|(start, len)| (start, len as usize))
+        .collect();
+    let mut bytes = read_once(&state, regions).await?.into_iter();
+    Ok(items
+        .into_iter()
+        .map(|item| match item {
+            Ok(item) => match bytes.next() {
+                Some(b) if b.len() >= item.span().map_or(0, |(_, len)| len as usize) => ValueRead {
+                    value: Some(decode(&item, &b)).filter(|v| !v.is_nan()),
+                    error: None,
+                },
+                _ => ValueRead {
+                    value: None,
+                    error: Some("short read".into()),
+                },
+            },
+            Err(error) => ValueRead {
+                value: None,
                 error: Some(error),
             },
         })
         .collect())
+}
+
+/// Read target memory once through the running session.
+async fn read_once(
+    state: &SessionState,
+    regions: Vec<(u64, usize)>,
+) -> Result<Vec<Vec<u8>>, String> {
+    if regions.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (reply, rx) = mpsc::sync_channel(1);
+    if !state.send(SessionCommand::Read { regions, reply }) {
+        return Err("connect a debug probe first".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        rx.recv_timeout(REQUEST_TIMEOUT)
+            .unwrap_or_else(|_| Err("the target did not answer in time".into()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

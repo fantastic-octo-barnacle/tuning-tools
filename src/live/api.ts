@@ -1,5 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { Catalog, NodeRef, SourceLocation, SymbolNode } from "../elf/api";
+import { Catalog, NodeRef, SymbolNode, TaskPoint } from "../elf/api";
 
 export interface ProbeInfo {
   selector: string;
@@ -139,15 +139,6 @@ export function discardValues(): Promise<void> {
   return invoke("session_discard");
 }
 
-export interface TaskPoint {
-  /** `Unresumed`, `Returned`, `Panicked`, or `Suspend0`, `Suspend1`, … */
-  label: string;
-  /** The future's variant node path */
-  path: string;
-  /** The `.await` a suspended task is parked on */
-  location: SourceLocation | null;
-}
-
 export interface TaskState {
   /** The pool slot holds a future */
   spawned: boolean;
@@ -156,14 +147,48 @@ export interface TaskState {
   at: TaskPoint | null;
 }
 
+/** The firmware's counters for one task (rm-task-stats); counts wrap at 32 bits */
+export interface TaskCounters {
+  polls: number;
+  cycles: number;
+  /** Longest poll since the task was spawned */
+  maxCycles: number;
+  /** Longest poll in the last one to two seconds */
+  recentMaxCycles: number;
+}
+
 export interface TaskStatus {
   /** The task's root node path */
   path: string;
   state: TaskState | null;
   error: string | null;
+  counters: TaskCounters | null;
 }
 
-/** Every embassy task's state, read once over the probe. */
-export function taskStates(): Promise<TaskStatus[]> {
+export interface TaskSnapshot {
+  tasks: TaskStatus[];
+  /** Host time of the read, in microseconds from an arbitrary start */
+  hostUs: number;
+  /** The firmware links rm-task-stats */
+  hasStats: boolean;
+  /** Cycle counter frequency, when the counters were read; 0 before the firmware set it */
+  clockHz: number | null;
+  /** Tasks spawned while every counter slot was taken */
+  untracked: number;
+  statsError: string | null;
+}
+
+/** Every embassy task's state, and its CPU counters when the firmware keeps them, read once over the probe. */
+export function taskStates(): Promise<TaskSnapshot> {
   return invoke("session_task_states");
+}
+
+export interface ValueRead {
+  value: number | null;
+  error: string | null;
+}
+
+/** Read each numeric node once over the probe, outside the watch list. */
+export function readValues(nodes: NodeRef[]): Promise<ValueRead[]> {
+  return invoke("session_read_values", { nodes });
 }

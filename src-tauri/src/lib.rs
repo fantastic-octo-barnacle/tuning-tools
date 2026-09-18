@@ -24,7 +24,8 @@ pub fn run() {
             session::session_save,
             session::list_serial_ports,
             session::watchable_leaves,
-            session::session_task_states
+            session::session_task_states,
+            session::session_read_values,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

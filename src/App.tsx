@@ -8,7 +8,7 @@ import { ConnectBar } from "./live/ConnectBar";
 import { LogConsole } from "./live/LogConsole";
 import { Scope } from "./live/Scope";
 import { StatusBar } from "./live/StatusBar";
-import { TasksPanel } from "./live/TasksPanel";
+import { TasksView } from "./live/TasksView";
 import { TunePanel } from "./live/TunePanel";
 import { WatchTable } from "./live/WatchTable";
 import { useSession } from "./live/useSession";
@@ -23,15 +23,23 @@ export default function App() {
   const [selected, setSelected] = useState<SymbolNode | null>(null);
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [leftTab, setLeftTab] = useState<"symbols" | "tasks" | "tune">("symbols");
+  const [leftTab, setLeftTab] = useState<"symbols" | "tune">("symbols");
+  const [mainTab, setMainTab] = useState<"plot" | "tasks">("plot");
   const session = useSession();
   // A framed link lists its own values, so it works without an ELF
   const linkOnly = elf === null && session.catalog !== null;
   const watch = useWatches(elf?.summary.path ?? (linkOnly ? "link" : null), elf);
   const catalog = session.catalog ?? elf?.catalog ?? null;
   const hasTasks = (elf?.tasks.length ?? 0) > 0;
-  const tab = linkOnly ? "tune" : leftTab === "tasks" && !hasTasks ? "symbols" : leftTab;
-  const tabs: (typeof leftTab)[] = elf ? ["symbols", ...(hasTasks ? (["tasks"] as const) : []), "tune"] : ["tune"];
+  const tab = linkOnly ? "tune" : leftTab;
+  const tabs: (typeof leftTab)[] = elf ? ["symbols", "tune"] : ["tune"];
+  const view = hasTasks ? mainTab : "plot";
+  // Task slots stand in for their untyped pools, so the raw storage stays browsable
+  const symbolRoots = useMemo(() => {
+    if (!elf?.tasks.length) return elf?.roots ?? [];
+    const pools = new Set(elf.tasks.map((t) => t.root.ref.symbol));
+    return [...elf.roots.filter((r) => !pools.has(r.path)), ...elf.tasks.map((t) => ({ ...t.root, internal: true }))];
+  }, [elf]);
 
   async function loadElf(path: string) {
     setLoading(fileName(path));
@@ -132,36 +140,20 @@ export default function App() {
                     tab === t ? "border-rule bg-surface text-ink" : "border-transparent text-muted hover:text-ink"
                   }`}
                 >
-                  {t === "symbols"
-                    ? "Symbols"
-                    : t === "tasks"
-                      ? `Tasks (${elf?.tasks.length ?? 0})`
-                      : `Tune${catalog ? ` (${catalog.entries.length})` : ""}`}
+                  {t === "symbols" ? "Symbols" : `Tune${catalog ? ` (${catalog.entries.length})` : ""}`}
                 </button>
               ))}
             </div>
-            {(tab === "symbols" || tab === "tasks") && elf ? (
+            {tab === "symbols" && elf ? (
               <>
                 <div className="min-h-0 flex-1">
-                  {tab === "symbols" ? (
-                    <SymbolTree
-                      roots={elf.roots}
-                      selected={selected}
-                      onSelect={setSelected}
-                      onWatch={onWatch}
-                      watched={watchedPaths}
-                    />
-                  ) : (
-                    <TasksPanel
-                      tasks={elf.tasks}
-                      connected={connected}
-                      carrier={session.link.carrier}
-                      selected={selected}
-                      onSelect={setSelected}
-                      onWatch={onWatch}
-                      watched={watchedPaths}
-                    />
-                  )}
+                  <SymbolTree
+                    roots={symbolRoots}
+                    selected={selected}
+                    onSelect={setSelected}
+                    onWatch={onWatch}
+                    watched={watchedPaths}
+                  />
                 </div>
                 <div className="max-h-[40%] shrink-0 overflow-auto border-t border-rule bg-surface">
                   <NodeDetails node={selected} roots={elf.roots} onWatch={onWatch} />
@@ -182,8 +174,37 @@ export default function App() {
             )}
           </section>
           <section className="grid min-h-0 grid-rows-[minmax(0,3fr)_minmax(0,2fr)] bg-surface">
-            <div className="min-h-0 border-b border-rule">
-              <Scope watches={watch.watches} connected={connected} />
+            <div className="flex min-h-0 flex-col border-b border-rule">
+              {hasTasks && (
+                <div role="tablist" className="flex gap-1 border-b border-rule bg-panel px-2 pt-1.5">
+                  {(["plot", "tasks"] as const).map((t) => (
+                    <button
+                      key={t}
+                      role="tab"
+                      aria-selected={view === t}
+                      onClick={() => setMainTab(t)}
+                      className={`rounded-t-sm border border-b-0 px-3 py-1 ${
+                        view === t ? "border-rule bg-surface text-ink" : "border-transparent text-muted hover:text-ink"
+                      }`}
+                    >
+                      {t === "plot" ? "Plot" : `Tasks (${elf?.tasks.length ?? 0})`}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="min-h-0 flex-1">
+                {view === "tasks" && elf ? (
+                  <TasksView
+                    tasks={elf.tasks}
+                    connected={connected}
+                    carrier={session.link.carrier}
+                    onWatch={onWatch}
+                    watched={watchedPaths}
+                  />
+                ) : (
+                  <Scope watches={watch.watches} connected={connected} />
+                )}
+              </div>
             </div>
             <div className="grid min-h-0 grid-cols-2">
               <div className="min-h-0 border-r border-rule">
