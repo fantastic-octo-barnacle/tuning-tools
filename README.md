@@ -76,3 +76,48 @@ crates/
   studio-core      read planner, session thread, stats, sample frames, defmt
 docs/           design records and reference notes
 ```
+
+## VS Code extension
+
+Build the server and extension, or choose **Tuning Studio extension** in this
+workspace's Run and Debug menu and press F5 (its pre-launch task builds all three):
+
+```bash
+cargo build -p studio-server
+npm run build:webview
+npm --prefix vscode install
+npm --prefix vscode run build
+```
+
+In the Extension Development Host:
+
+- Open **Tuning Studio** in the Activity Bar. The native Target and Symbols views
+  can be moved and resized like other VS Code views.
+- Use **Open Firmware ELF**, or right-click a firmware file in Explorer. Opening
+  the same ELF again reloads a rebuild; disconnect first when changing firmware.
+- Choose **Connect Target** to select a debug probe/chip or USB serial port using
+  native pickers. Probe defaults come from the workspace's probe-rs `launch.json`.
+- Expand symbols and use **Plot Symbol** to add scalar values (or numeric children)
+  to the scope. **Go to Source** is available where DWARF includes a source location.
+- Open **Tuning Scope** beside your code. Plots, watch readouts and tuning controls
+  remain webview content; connection controls, symbol navigation, status and firmware
+  logs live in the workbench.
+- Click the native status-bar item for target actions, including sample-rate changes.
+  Firmware logs appear in **Output → Tuning Studio: Firmware**. Recording commands
+  are available in the Command Palette and Target view.
+
+Closing the scope does **not** disconnect the target or stop a recording. Reopening
+it attaches to the existing session; chart history starts fresh, while recording
+continues. Use **Disconnect Target** to release it. Ending the extension host also
+stops the server. A probe-rs debug session still takes priority over probe ownership;
+USB remains independent.
+
+Settings: `tuningStudio.serverPath`, `tuningStudio.mockTarget`,
+`tuningStudio.sampleRateHz` and `tuningStudio.swdSpeedKhz`. Enable `mockTarget` to
+exercise a probe session against an ELF's initialized memory without hardware.
+The browser preview is separate and does not render native VS Code views.
+
+Validation: `npm --prefix vscode run typecheck` and
+`npm --prefix vscode run harness`. The harness exercises the extension with a mock
+server, including probe handoff, recording/export, native commands and scope
+reattachment.

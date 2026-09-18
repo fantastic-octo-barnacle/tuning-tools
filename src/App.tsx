@@ -61,8 +61,9 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [sideTab, setSideTab] = useState<"symbols" | "tune">("symbols");
   const [dockTab, setDockTab] = useState<"log" | "tasks">("log");
-  const [side, setSide] = useState(true);
+  const [side, setSide] = useState(host.name !== "vscode");
   const [dock, setDock] = useState(loadDock);
+  const [dockOpen, setDockOpen] = useState(false);
   const [logFilter, setLogFilter] = useState<LogFilter>(defaultLogFilter);
   const [preset, setPreset] = useState<ConnectRequest | null>(null);
   const [connectDefaults, setConnectDefaults] = useState<ConnectDefaults | null>(null);
@@ -110,6 +111,9 @@ export default function App() {
     }
   }
 
+  const [startupRevision, setStartupRevision] = useState(0);
+  useEffect(() => host.watchStartup?.(() => setStartupRevision((n) => n + 1)), []);
+
   const { connect } = session;
   useEffect(() => {
     let stale = false;
@@ -117,17 +121,16 @@ export default function App() {
       if (stale) return;
       startup.current = s;
       setConnectDefaults(s.connectDefaults);
-      if (!s.elfPath) return;
-      const opened = await loadElf(s.elfPath);
-      if (opened && s.connect && !stale) {
+      const opened = s.elfPath ? await loadElf(s.elfPath) : null;
+      if ((opened || !s.elfPath) && s.connect && !stale) {
         setPreset(s.connect);
         void connect(s.connect);
       }
-    });
+    }).catch((e) => { if (!stale) setError(`Could not restore the target: ${e}`); });
     return () => {
       stale = true;
     };
-  }, [loadElf, connect]);
+  }, [loadElf, connect, startupRevision]);
 
   // Launch watches fill a list that has nothing saved, once the list for the ELF is loaded
   const { seed, ready } = watch;
@@ -156,6 +159,15 @@ export default function App() {
     [add],
   );
 
+  useEffect(() => {
+    if (!ready) return;
+    return host.watchRequests?.((nodes) => nodes.forEach(onWatch));
+  }, [ready, onWatch]);
+
+  const workbench = (command: string) => {
+    void host.workbenchCommand?.(command).catch((e) => setError(String(e)));
+  };
+
   const writable = useCallback(
     (w: Watch) => {
       const entry = w.cell === null ? undefined : catalog?.entries.find((e) => e.id === w.cell);
@@ -180,35 +192,56 @@ export default function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-rule bg-panel px-3 py-1.5">
-        <button onClick={chooseElf} disabled={loading !== null} className={button}>
-          Open ELF…
-        </button>
-        {loading && <span className="text-muted">Reading {loading}…</span>}
-        {!loading && elf && (
-          <span className="flex min-w-0 items-center gap-2">
-            <span className="truncate font-mono text-[13px] font-medium" title={elf.summary.path}>
-              {fileName(elf.summary.path)}
-            </span>
-            {chip && (
-              <span
-                title={check?.state === "differs" ? check.message : undefined}
-                className={`shrink-0 rounded-full border px-2 text-[11px] leading-[17px] ${chip.className}`}
-              >
-                {chip.text}
+      {host.name !== "vscode" && (
+        <>
+          <header className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-rule bg-surface px-4 py-2">
+            <span className="mr-2 font-semibold tracking-tight">Tuning Studio</span>
+            <button onClick={chooseElf} disabled={loading !== null} className={button}>
+              Open ELF…
+            </button>
+            {loading && <span className="text-muted">Reading {loading}…</span>}
+            {!loading && elf && (
+              <span className="flex min-w-0 items-center gap-2">
+                <span className="truncate font-mono text-[13px] font-medium" title={elf.summary.path}>
+                  {fileName(elf.summary.path)}
+                </span>
+                {chip && (
+                  <span
+                    title={check?.state === "differs" ? check.message : undefined}
+                    className={`shrink-0 rounded-full border px-2 text-[11px] leading-[17px] ${chip.className}`}
+                  >
+                    {chip.text}
+                  </span>
+                )}
               </span>
             )}
-          </span>
-        )}
-        <ConnectBar
-          link={session.link}
-          canConnect={elf !== null}
-          preset={preset}
-          defaults={connectDefaults}
-          onConnect={(request) => void session.connect(request)}
-          onDisconnect={() => void session.disconnect()}
-        />
-      </header>
+            <span className="flex-1" />
+            <button className={ghostButton} aria-expanded={side} onClick={() => setSide((s) => !s)}>Variables</button>
+            <button className={ghostButton} aria-expanded={dockOpen} onClick={() => setDockOpen((s) => !s)}>Logs & tasks</button>
+          </header>
+          <div className="shrink-0 border-b border-rule bg-panel px-4 py-2">
+            <ConnectBar
+              link={session.link}
+              canConnect={elf !== null}
+              preset={preset}
+              defaults={connectDefaults}
+              onConnect={(request) => void session.connect(request)}
+              onDisconnect={() => void session.disconnect()}
+            />
+          </div>
+        </>
+      )}
+      {host.name === "vscode" && (
+        <div className="flex shrink-0 items-center gap-2 border-b border-rule px-3 py-1.5">
+          <button className={ghostButton} onClick={() => workbench("tuningStudio.target.focus")}>Target & symbols</button>
+          <span className="min-w-0 flex-1 truncate text-muted">{elf ? fileName(elf.summary.path) : connected ? "USB tuning" : "No target connected"}</span>
+          {chip && <span className={`text-[11px] ${chip.className}`}>{chip.text}</span>}
+          <button className={ghostButton} onClick={() => { setSide((s) => !s); setSideTab("tune"); }}>Tune</button>
+          <button className={ghostButton} onClick={() => workbench("tuningStudio.showLogs")}>Firmware log</button>
+          {hasTasks && <button className={ghostButton} onClick={() => { setDockTab("tasks"); setDockOpen((s) => !s); }}>Tasks</button>}
+          <button className={button} onClick={() => workbench(connected ? "tuningStudio.disconnect" : "tuningStudio.connect")}>{connected ? "Disconnect" : "Connect…"}</button>
+        </div>
+      )}
 
       {error && (
         <div role="alert" className="flex items-center border-b border-rule bg-surface px-3 py-1.5 text-danger">
@@ -221,10 +254,11 @@ export default function App() {
 
       {elf || linkOnly ? (
         <main
-          className={`grid min-h-0 flex-1 ${side ? "grid-cols-[minmax(280px,26%)_minmax(0,1fr)]" : "grid-cols-[minmax(0,1fr)]"}`}
+          className={`grid min-h-0 flex-1 ${side ? "workspace-with-sidebar" : "grid-cols-[minmax(0,1fr)]"}`}
         >
           {side && (
-            <aside className="flex min-h-0 flex-col border-r border-rule bg-surface">
+            <aside className="flex min-h-0 min-w-0 flex-col border-r border-rule bg-surface">
+              <div className="px-3 pt-3 pb-2 text-[11px] font-semibold uppercase tracking-wider text-muted">Variables</div>
               <TabStrip>
                 {elf && (
                   <Tab selected={tab === "symbols"} onSelect={() => setSideTab("symbols")} count={symbolRoots.length}>
@@ -268,7 +302,7 @@ export default function App() {
           )}
           <div
             className="grid min-h-0 min-w-0 grid-rows-[minmax(0,1fr)_auto_var(--dock)]"
-            style={{ "--dock": `${dock}px` } as React.CSSProperties}
+            style={{ "--dock": dockOpen ? `min(${dock}px, 40vh)` : "0px" } as React.CSSProperties}
           >
             <Scope
               watches={watch.watches}
@@ -307,14 +341,15 @@ export default function App() {
                 else return;
                 e.preventDefault();
               }}
-              className="h-[5px] cursor-row-resize border-t border-rule bg-panel hover:bg-accent-wash focus-visible:bg-accent-wash"
+              className={`${dockOpen ? "h-[5px]" : "hidden"} cursor-row-resize border-t border-rule bg-panel hover:bg-accent-wash focus-visible:bg-accent-wash`}
             />
-            <section aria-label="Bottom panel" className="flex min-h-0 flex-col bg-surface">
+            <section aria-label="Bottom panel" className={`${dockOpen ? "flex" : "hidden"} min-h-0 flex-col overflow-hidden bg-surface`}>
               <TabStrip
                 tools={
-                  dockView === "log" && (
-                    <LogTools filter={logFilter} onChange={setLogFilter} onClear={session.clearLogs} />
-                  )
+                  <>
+                    {dockView === "log" && <LogTools filter={logFilter} onChange={setLogFilter} onClear={session.clearLogs} />}
+                    <button className={ghostButton} onClick={() => setDockOpen(false)} aria-label="Hide bottom panel">×</button>
+                  </>
                 }
               >
                 <Tab selected={dockView === "log"} onSelect={() => setDockTab("log")}>
@@ -351,12 +386,10 @@ export default function App() {
       ) : (
         <main className="flex flex-1 items-center justify-center bg-surface p-8">
           <div className="max-w-md">
-            <h1 className="text-[20px] font-semibold">Open a firmware build to watch it live</h1>
+            <h1 className="text-[20px] font-semibold">Start watching your firmware</h1>
             <p className="mt-2 leading-relaxed text-muted">
-              Pick the ELF that cargo or your IDE produced, for example
-              <span className="font-mono text-ink"> target/thumbv7em-none-eabihf/release/balance-infantry-chassis</span>.
-              Then connect the debug probe to plot its statics and read its defmt log while it runs. To tune
-              values without a probe, pick USB and connect to the robot's Type-C port.
+              Open a firmware ELF to browse variables and plot them through your debug probe.
+              {host.name === "vscode" ? " Choose Connect… above for a USB target — no ELF needed." : " For a USB target, choose USB in Connection settings above and connect directly — no ELF needed."}
             </p>
             <button onClick={chooseElf} disabled={loading !== null} className={`${primaryButton} mt-4`}>
               Open ELF…

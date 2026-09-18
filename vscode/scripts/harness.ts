@@ -47,7 +47,7 @@ async function main() {
 
   activate(context as never);
   await harness.commands.get("tuningStudio.open")!();
-  const panel = harness.panels[0];
+  let panel = harness.panels[0];
   assert.ok(panel, "panel opened");
   assert.equal((panel.createOptions as { retainContextWhenHidden: boolean }).retainContextWhenHidden, true);
 
@@ -192,8 +192,68 @@ async function main() {
   await sleep(10);
   assert.deepEqual(state.get("tuningStudio.storage"), { scope: '{"windowSec":5}' });
 
+  // Closing a view must leave the session and recording alive.
+  const starts = harness.log.filter(l => l.startsWith("starting ")).length;
+  const trees = harness.trees.get("tuningStudio.symbols");
+  assert.ok((await trees.getChildren()).some((n: any) => n.path === "global_counter"));
+  assert.match(harness.statusBars[0].text, /connected/);
+  const lifecycleScratch = mkdtempSync(join(tmpdir(), "tuning-studio-lifecycle-"));
+  workspace.workspaceFolders = [{ uri: Uri.file(lifecycleScratch), name: "lifecycle", index: 0 }];
+  await harness.commands.get("tuningStudio.startRecording")!();
+  await until("native recording indicator", () => /record/.test(harness.statusBars[0].text));
   panel.dispose();
+  await sleep(100);
+  await harness.commands.get("tuningStudio.open")!();
+  panel = harness.panels.at(-1);
+  const resumed = await call("startup");
+  assert.equal(resumed.resumeSession, 44, "scope reattaches to the same session");
+  assert.deepEqual(resumed.connect, request);
+  const cached = await call("open_elf", { path: FIXTURE });
+  assert.equal(cached.summary.path, FIXTURE);
+  const snapshot = await call("session_attach", { session: 44 });
+  assert.ok(snapshot.some((e: any) => e.type === "status" && e.state === "connected"));
+  await until("frames after reopening scope", () => frames(44).length >= 2);
+  const liveRecording = await call("app_state");
+  assert.equal(liveRecording.recording.active, true, "recording survives scope closure");
+  const nativeStopped = await harness.commands.get("tuningStudio.stopRecording")!() as { ticks: number };
+  assert.ok(nativeStopped.ticks > 0);
+  workspace.workspaceFolders = folders;
+  rmSync(lifecycleScratch, { recursive: true, force: true });
+  assert.equal(harness.log.filter(l => l.startsWith("starting ")).length, starts, "server wasn't restarted");
+  await assert.rejects(call("session_attach", { session: 999 }), /session ended/);
+  await assert.rejects(call("open_elf", { path: "different.elf" }), /Disconnect/);
+  await assert.rejects(call("session_connect", { request, session: 45 }), /Disconnect/);
+
+  await harness.commands.get("tuningStudio.plotSymbol")!(root);
+  assert.deepEqual(await call("take_pending_watches"), [root]);
+  assert.deepEqual(await call("take_pending_watches"), []);
+  await harness.commands.get("tuningStudio.disconnect")!();
+  await until("native disconnect", () => /disconnected/.test(harness.statusBars[0].text));
+
+  // Native connection wizard and Explorer ELF command work without a scope.
+  panel.dispose();
+  await harness.commands.get("tuningStudio.openElf")!(Uri.file(FIXTURE));
+  harness.quickPicks.push(0, 0);
+  harness.inputValues.push("STM32H723VGTx");
+  await harness.commands.get("tuningStudio.connect")!();
+  await until("native connection", () => /: connected/.test(harness.statusBars[0].text));
+  await harness.commands.get("tuningStudio.open")!();
+  panel = harness.panels.at(-1);
+  const native = await call("startup");
+  assert.ok(native.resumeSession);
+  assert.equal(native.connect.chip, "STM32H723VGTx");
+  await call("session_attach", { session: native.resumeSession });
+  harness.quickPicks.push(3);
+  await harness.commands.get("tuningStudio.setRate")!();
+  assert.equal((await call("startup")).connect.rateHz, 200);
+  await harness.commands.get("tuningStudio.showSource")!({ ...root, location: { file: "src/main.rs", line: 2 } });
+  assert.equal(harness.documents.at(-1), join(REPO, "src/main.rs"));
+  await harness.commands.get("tuningStudio.disconnect")!();
+  assert.equal(harness.log.filter(l => l.startsWith("starting ")).length, starts);
+  panel.dispose();
+  for (const subscription of context.subscriptions) subscription.dispose();
   await sleep(500);
+  console.log("native workbench: trees, commands, session reattachment and shutdown ok");
   assert.deepEqual(harness.errors, [], "no error messages");
   console.log("panel closed; extension log:");
   for (const line of harness.log) console.log(`  ${line}`);

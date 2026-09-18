@@ -1,3 +1,4 @@
+import { host } from "../host";
 import { OpenedElf } from "../elf/api";
 import { CoreState, Stats } from "./api";
 import { formatMicros, formatRate } from "./format";
@@ -43,7 +44,7 @@ export function StatusBar({ elf, link, stats }: { elf: OpenedElf | null; link: L
           {elf.summary.machine}, {ramStatics} RAM statics, parsed in {elf.parseMs} ms
         </span>
       )}
-      <span className="ml-auto flex min-w-0 items-center gap-1.5 border-l border-rule px-3 py-[3px]">
+      {host.name !== "vscode" && <span className="ml-auto flex min-w-0 items-center gap-1.5 border-l border-rule px-3 py-[3px]">
         <span
           aria-hidden
           data-lit={lit || undefined}
@@ -55,7 +56,7 @@ export function StatusBar({ elf, link, stats }: { elf: OpenedElf | null; link: L
             {link.message}
           </span>
         )}
-      </span>
+      </span>}
       {lit && stats && (
         <>
           <Cell title="Achieved sample rate over the last 200 ticks" tone={slow ? "warn" : undefined}>

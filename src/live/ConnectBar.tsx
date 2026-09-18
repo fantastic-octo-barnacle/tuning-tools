@@ -141,7 +141,14 @@ export function ConnectBar({ link, canConnect, onConnect, onDisconnect, preset, 
   const shownNotice = notice && notice.id !== dismissed ? notice : null;
 
   return (
-    <form onSubmit={submit} className="ml-auto flex flex-wrap items-center gap-1.5">
+    <form onSubmit={submit} className="flex w-full flex-wrap items-center gap-2">
+      <span className={`h-2 w-2 rounded-full ${link.state === "connected" ? "bg-good" : "bg-faint"}`} aria-hidden />
+      <span className="font-medium">{serial ? "USB target" : settings.chip || "Debug probe"}</span>
+      <span className="text-muted">{link.state === "connected" ? "Connected" : link.state === "connecting" ? "Connecting…" : link.state === "failed" ? "Connection failed" : "Disconnected"}</span>
+      <span className="flex-1" />
+      <button type="submit" disabled={!active && blocked !== null} title={active ? undefined : (blocked ?? undefined)} className={active ? button : primaryButton}>
+        {link.state === "connecting" ? "Cancel" : active ? "Disconnect" : "Connect"}
+      </button>
       {shownNotice && (
         <span role="status" className="flex items-center gap-1.5 rounded-sm border border-rule bg-sunken px-2 py-px">
           <span className="text-muted">{shownNotice.message}</span>
@@ -164,6 +171,9 @@ export function ConnectBar({ link, canConnect, onConnect, onDisconnect, preset, 
           </button>
         </span>
       )}
+      <details className="connection-settings w-full">
+        <summary className="cursor-pointer select-none text-[12px] text-muted hover:text-ink">Connection settings <span className="ml-2 text-faint">{serial ? port || "Select a port" : `${settings.rateHz} Hz · ${settings.speedKhz / 1000} MHz SWD`}</span></summary>
+        <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-rule pt-3">
       <Segmented<api.Carrier | "debugger">
         label="Connect through"
         value={settings.carrier}
@@ -182,12 +192,7 @@ export function ConnectBar({ link, canConnect, onConnect, onDisconnect, preset, 
             disabled: !sources.serial.available,
             title: sources.serial.reason ?? "The robot's USB cable; no probe or ELF needed",
           },
-          {
-            value: "debugger",
-            label: "Debug session",
-            disabled: !sources.debugger.available,
-            title: sources.debugger.reason ?? "Share the probe with a running probe-rs debug session",
-          },
+
         ]}
       />
       {serial ? (
@@ -284,14 +289,9 @@ export function ConnectBar({ link, canConnect, onConnect, onDisconnect, preset, 
           ))}
         </select>
       </label>
-      <button
-        type="submit"
-        disabled={!active && blocked !== null}
-        title={active ? undefined : (blocked ?? undefined)}
-        className={`min-w-24 ${active ? button : primaryButton}`}
-      >
-        {link.state === "connecting" ? "Cancel" : active ? "Disconnect" : "Connect"}
-      </button>
+        </div>
+      </details>
+      {!active && blocked && <p className="w-full text-[12px] text-muted">{blocked}</p>}
     </form>
   );
 }

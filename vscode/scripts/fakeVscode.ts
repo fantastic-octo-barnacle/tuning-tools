@@ -39,11 +39,16 @@ function emitter<T>() {
 
 /** What the harness inspects and drives */
 export const harness = {
-  commands: new Map<string, () => unknown>(),
+  commands: new Map<string, (...args: any[]) => unknown>(),
   configProviders: [] as { resolveDebugConfigurationWithSubstitutedVariables?: (f: unknown, c: any) => Promise<any> }[],
   started: emitter<any>(),
   terminated: emitter<any>(),
   panels: [] as any[],
+  trees: new Map<string, any>(),
+  statusBars: [] as any[],
+  quickPicks: [] as (number | undefined)[],
+  documents: [] as string[],
+  inputValues: [] as (string | undefined)[],
   settings: {} as Record<string, unknown>,
   info: [] as string[],
   errors: [] as string[],
@@ -56,17 +61,49 @@ export const harness = {
 };
 
 export const commands = {
-  registerCommand(name: string, fn: () => unknown) {
+  registerCommand(name: string, fn: (...args: any[]) => unknown) {
     harness.commands.set(name, fn);
     return new Disposable(() => harness.commands.delete(name));
   },
   async executeCommand(name: string, ...args: unknown[]) {
     harness.executed.push({ name, args });
+    return harness.commands.get(name)?.(...args);
   },
 };
 
+export class EventEmitter<T> {
+  private readonly emitter = emitter<T>();
+  readonly event = this.emitter.event;
+  fire(value: T) { this.emitter.fire(value); }
+  dispose() {}
+}
+export enum StatusBarAlignment { Left = 1, Right = 2 }
+export enum TreeItemCollapsibleState { None = 0, Collapsed = 1, Expanded = 2 }
+export class TreeItem {
+  constructor(public label: string, public collapsibleState = TreeItemCollapsibleState.None) {}
+}
+export class Position { constructor(public line: number, public character: number) {} }
+export class Range { constructor(public start: Position, public end: Position) {} }
+export class Selection extends Range {}
+export class ThemeIcon { constructor(public id: string) {} }
+
 export const window = {
-  createOutputChannel: () => ({ appendLine: (l: string) => harness.log.push(l), dispose() {} }),
+  showTextDocument: async () => ({ selection: undefined as unknown, revealRange() {} }),
+  registerTreeDataProvider: (id: string, provider: any) => {
+    harness.trees.set(id, provider);
+    return new Disposable(() => harness.trees.delete(id));
+  },
+  createStatusBarItem: () => {
+    const status = { text: "", show() {}, dispose() {} };
+    harness.statusBars.push(status);
+    return status;
+  },
+  showQuickPick: async (items: any[]) => {
+    const index = harness.quickPicks.shift();
+    return index === undefined ? undefined : items[index];
+  },
+  showInputBox: async () => harness.inputValues.shift(),
+  createOutputChannel: () => ({ appendLine: (l: string) => harness.log.push(l), show() {}, dispose() {} }),
   showErrorMessage: async (m: string) => void harness.errors.push(m),
   showInformationMessage: async (m: string) => void harness.info.push(m),
   showOpenDialog: async () => undefined,
@@ -100,10 +137,11 @@ export const window = {
 };
 
 export const workspace = {
+  openTextDocument: async (uri: Uri) => { harness.documents.push(uri.fsPath); return {}; },
   workspaceFolders: undefined as unknown,
   getConfiguration(section: string) {
     return {
-      get: (key: string) => (section === "launch" && key === "configurations" ? harness.launch : harness.settings[`${section}.${key}`]),
+      get: (key: string, fallback?: unknown) => (section === "launch" && key === "configurations" ? harness.launch : harness.settings[`${section}.${key}`] ?? fallback),
     };
   },
 };

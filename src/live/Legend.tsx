@@ -55,8 +55,9 @@ export function Legend({ lanes, watches, overlay, readout, ...actions }: Props) 
   );
 
   return (
-    <div aria-label="Watched values" className="flex min-h-0 flex-col border-l border-rule bg-surface text-[12px] max-[900px]:border-t max-[900px]:border-l-0">
+    <div aria-label="Watched values" className="flex min-h-0 flex-col border-t border-rule bg-surface text-[12px]">
       <div className="min-h-0 flex-1 overflow-auto">
+        <div className="px-2.5 pt-2 text-[11px] font-semibold uppercase tracking-wider text-muted">Watched values</div>
         {watches.length === 0 && (
           <p className="p-3 leading-relaxed text-muted">
             Nothing watched yet. Pick numbers from the Symbols tab (select a row and press W), or watch a tuning value.

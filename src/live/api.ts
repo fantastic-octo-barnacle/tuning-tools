@@ -57,7 +57,7 @@ export type SessionEvent =
   | { type: "status"; state: LinkState; message: string | null }
   | ({ type: "stats" } & Stats)
   | { type: "log"; lines: LogLine[] }
-  | { type: "tune"; check: CatalogCheck; values: TuneValue[] }
+  | { type: "tune"; check: CatalogCheck; values: TuneValue[]; savedValues?: [number, number][] }
   | { type: "catalog"; catalog: Catalog };
 
 /** A debug probe on SWD, or the firmware's framed link on a serial port */

@@ -69,7 +69,7 @@ export function useSession() {
             setTune((old) => ({
               check: event.check,
               values,
-              saved: old?.saved.size ? old.saved : requestedValues(values),
+              saved: event.savedValues ? new Map(event.savedValues) : old?.saved.size ? old.saved : requestedValues(values),
             }));
           } else if (event.type === "stats") {
             setStats(event);

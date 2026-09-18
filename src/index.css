@@ -241,3 +241,21 @@ body {
 :root[data-host="vscode"] [data-statusbar] [data-lit] {
   background: currentColor;
 }
+
+/* Keep navigation compact and preserve space for the instrument. */
+.workspace-with-sidebar {
+  grid-template-columns: clamp(220px, 22vw, 300px) minmax(0, 1fr);
+}
+@media (max-width: 700px) {
+  .workspace-with-sidebar {
+    grid-template-columns: minmax(160px, 32%) minmax(0, 1fr);
+  }
+}
+/* Telemetry is a quiet footer, not a second VS Code status bar. */
+:root[data-host="vscode"] [data-statusbar] {
+  background: var(--surface);
+  color: var(--muted);
+  border-top-color: var(--rule);
+}
+:root[data-host="vscode"] [data-statusbar] .text-danger { color: var(--danger); }
+:root[data-host="vscode"] [data-statusbar] .text-warn { color: var(--warn); }

@@ -2,6 +2,7 @@
 // (dialogs, launch configurations) or passes it to studio-server. Method names and arguments are
 // the Tauri commands', so the two backends stay one API.
 
+import type { SymbolNode } from "../elf/api";
 import type { ConnectRequest, SessionEvent } from "../live/api";
 import type { AppEvent } from "../live/recording";
 import { STANDALONE_STATUS, appEventHub } from "./common";
@@ -19,6 +20,8 @@ declare global {
 
 /** Messages from the extension */
 type Incoming =
+  | { type: "refresh" }
+  | { type: "watches_pending" }
   | { type: "result"; id: number; ok: true; result: unknown }
   | { type: "result"; id: number; ok: false; error: string }
   | { type: "event"; session: number; event: SessionEvent }
@@ -67,13 +70,20 @@ export function createVsCodeHost(): Host {
   const vscode = acquireVsCodeApi();
   const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
   let nextCall = 1;
-  // Random start, so a reloaded page never takes over a session an earlier page started
+  let resumeSession: number | undefined;
+  let watchListener: ((nodes: SymbolNode[]) => void) | undefined;
+  const takeWatches = () => {
+    if (!watchListener) return;
+    void call<SymbolNode[]>("take_pending_watches").then(nodes => watchListener?.(nodes), () => {});
+  };
+  // Fresh connections use a new ID; startup explicitly identifies a session to resume.
   let nextSession = Math.floor(Math.random() * 0x3fffffff) + 1;
   /** Only the latest connect's handlers get output, like a fresh Tauri channel per connect */
   let session: { id: number; handlers: SessionHandlers } | null = null;
   let status: HostStatus = STANDALONE_STATUS;
   const listeners = new Set<(s: HostStatus) => void>();
   const appEvents = appEventHub();
+  const startupListeners = new Set<() => void>();
 
   // Webview state survives the panel being hidden; the extension's workspace state survives a restart
   const saved = vscode.getState() as WebviewState | undefined;
@@ -90,6 +100,12 @@ export function createVsCodeHost(): Host {
   window.addEventListener("message", (e: MessageEvent<Incoming>) => {
     const m = e.data;
     switch (m?.type) {
+      case "refresh":
+        startupListeners.forEach((listener) => listener());
+        break;
+      case "watches_pending":
+        takeWatches();
+        break;
       case "result": {
         const call = pending.get(m.id);
         if (!call) return;
@@ -131,7 +147,21 @@ export function createVsCodeHost(): Host {
   return {
     name: "vscode",
     storage,
-    startup: () => call<HostStartup>("startup"),
+    startup: async () => {
+      const startup = await call<HostStartup>("startup");
+      resumeSession = startup.resumeSession;
+      return startup;
+    },
+    watchStartup(listener) {
+      startupListeners.add(listener);
+      return () => { startupListeners.delete(listener); };
+    },
+    workbenchCommand: (command) => call("workbench_command", { command }),
+    watchRequests(listener) {
+      watchListener = listener;
+      takeWatches();
+      return () => { watchListener = undefined; };
+    },
     watchStatus(listener) {
       listeners.add(listener);
       listener(status);
@@ -145,9 +175,16 @@ export function createVsCodeHost(): Host {
     listSerialPorts: () => call("list_serial_ports"),
     searchChips: (query) => call("search_chips", { query }),
     async connect(request: ConnectRequest, handlers) {
-      const id = nextSession++;
+      const resume = resumeSession;
+      resumeSession = undefined;
+      const id = resume ?? nextSession++;
       session = { id, handlers };
-      await call("session_connect", { request, session: id });
+      if (resume !== undefined) {
+        const events = await call<SessionEvent[]>("session_attach", { session: id });
+        if (session?.id === id) events.forEach(event => handlers.event(event));
+      } else {
+        await call("session_connect", { request, session: id });
+      }
     },
     disconnect: () => call("session_disconnect"),
     setRate: (hz) => call("session_set_rate", { hz }),

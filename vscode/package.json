@@ -22,8 +22,72 @@
     "commands": [
       {
         "command": "tuningStudio.open",
-        "title": "Open",
+        "title": "Open Scope",
+        "category": "Tuning Studio",
+        "icon": "$(graph-line)"
+      },
+      {
+        "command": "tuningStudio.openElf",
+        "title": "Open Firmware ELF\u2026",
+        "category": "Tuning Studio",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "tuningStudio.connect",
+        "title": "Connect Target\u2026",
+        "category": "Tuning Studio",
+        "icon": "$(plug)",
+        "enablement": "!tuningStudio.connected"
+      },
+      {
+        "command": "tuningStudio.disconnect",
+        "title": "Disconnect Target",
+        "category": "Tuning Studio",
+        "icon": "$(debug-disconnect)",
+        "enablement": "tuningStudio.connected"
+      },
+      {
+        "command": "tuningStudio.startRecording",
+        "title": "Start Recording",
+        "category": "Tuning Studio",
+        "icon": "$(record)",
+        "enablement": "tuningStudio.connected && !tuningStudio.recording"
+      },
+      {
+        "command": "tuningStudio.stopRecording",
+        "title": "Stop Recording",
+        "category": "Tuning Studio",
+        "icon": "$(debug-stop)",
+        "enablement": "tuningStudio.recording"
+      },
+      {
+        "command": "tuningStudio.showLogs",
+        "title": "Show Firmware Log",
+        "category": "Tuning Studio",
+        "icon": "$(output)"
+      },
+      {
+        "command": "tuningStudio.targetActions",
+        "title": "Target Actions\u2026",
         "category": "Tuning Studio"
+      },
+      {
+        "command": "tuningStudio.showSource",
+        "title": "Go to Source",
+        "category": "Tuning Studio",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "tuningStudio.plotSymbol",
+        "title": "Plot Symbol",
+        "category": "Tuning Studio",
+        "icon": "$(add)"
+      },
+      {
+        "command": "tuningStudio.setRate",
+        "category": "Tuning Studio",
+        "title": "Change Sample Rate\u2026",
+        "enablement": "tuningStudio.connected"
       }
     ],
     "configuration": {
@@ -39,8 +103,97 @@
           "type": "boolean",
           "default": false,
           "markdownDescription": "Connect the Probe source to an in-memory target holding the ELF's initialised data, instead of real hardware (runs `studio-server --mock`)."
+        },
+        "tuningStudio.sampleRateHz": {
+          "type": "number",
+          "default": 100,
+          "enum": [
+            10,
+            50,
+            100,
+            200,
+            500,
+            1000
+          ],
+          "description": "Initial sample rate for native target connections. Change a running session from Target Actions."
+        },
+        "tuningStudio.swdSpeedKhz": {
+          "type": "number",
+          "default": 4000,
+          "minimum": 1,
+          "description": "SWD clock in kHz when launch.json does not specify a speed."
         }
       }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "tuningStudio",
+          "title": "Tuning Studio",
+          "icon": "resources/studio.svg"
+        }
+      ]
+    },
+    "views": {
+      "tuningStudio": [
+        {
+          "id": "tuningStudio.target",
+          "name": "Target"
+        },
+        {
+          "id": "tuningStudio.symbols",
+          "name": "Symbols"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "tuningStudio.symbols",
+        "contents": "Open a firmware ELF to browse its symbols.\n[Open Firmware ELF](command:tuningStudio.openElf)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "tuningStudio.open",
+          "when": "view == tuningStudio.target",
+          "group": "navigation"
+        },
+        {
+          "command": "tuningStudio.openElf",
+          "when": "view == tuningStudio.symbols",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "tuningStudio.plotSymbol",
+          "when": "view == tuningStudio.symbols && viewItem =~ /^studioSymbol/",
+          "group": "inline"
+        },
+        {
+          "command": "tuningStudio.showSource",
+          "when": "view == tuningStudio.symbols && viewItem == studioSymbolSource",
+          "group": "navigation"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "tuningStudio.openElf",
+          "when": "resourceScheme == file && !explorerResourceIsFolder",
+          "group": "tuningStudio"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "tuningStudio.showSource",
+          "when": "false"
+        },
+        {
+          "command": "tuningStudio.plotSymbol",
+          "when": "false"
+        }
+      ]
     }
   },
   "scripts": {
@@ -49,7 +202,8 @@
     "typecheck": "tsc --noEmit -p .",
     "webview": "npm --prefix .. run build:webview",
     "smoke": "node esbuild.mjs && node dist/smoke.js",
-    "harness": "node esbuild.mjs && node dist/harness.js"
+    "harness": "node esbuild.mjs && node dist/harness.js",
+    "test:webview": "node scripts/webviewBridge.mjs"
   },
   "devDependencies": {
     "@types/node": "^20",

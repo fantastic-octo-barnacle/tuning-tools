@@ -269,7 +269,7 @@ export function Scope({ watches, connected, halted, onToggleSide, ...actions }: 
   const chip = halted
     ? { text: "Target halted", dot: "rounded-full bg-danger" }
     : paused
-      ? { text: "Paused", dot: "rounded-[1px] bg-warn" }
+      ? { text: "Chart paused", dot: "rounded-[1px] bg-warn" }
       : connected
         ? { text: "Live", dot: "rounded-full bg-good" }
         : { text: "Not connected", dot: "rounded-full bg-faint" };
@@ -319,13 +319,13 @@ export function Scope({ watches, connected, halted, onToggleSide, ...actions }: 
           title={paused ? "Double-clicking the plot also returns to live" : "Freeze the plot; drag across a lane to zoom"}
           className={`${button} text-[12px]`}
         >
-          {paused ? "Back to live" : "Pause"}
+          {paused ? "Resume chart" : "Pause chart"}
         </button>
       </div>
       <div>
         <RecordNotice rec={recorder} />
       </div>
-      <div className="grid min-h-0 grid-cols-[minmax(0,1fr)_290px] max-[900px]:grid-cols-1 max-[900px]:grid-rows-[minmax(0,1fr)_150px]">
+      <div className="grid min-h-0 grid-cols-1 grid-rows-[minmax(0,1fr)_minmax(110px,25%)]">
         <div
           className="relative flex min-h-0 min-w-0 flex-col bg-plot"
           onPointerLeave={() => {
@@ -356,7 +356,7 @@ export function Scope({ watches, connected, halted, onToggleSide, ...actions }: 
           {lanes.length === 0 && (
             <p className="absolute inset-0 flex items-center justify-center p-6 text-center text-muted">
               {connected
-                ? "Watch a number from the Symbols or Tune tab, or turn one on with its swatch in the list on the right."
+                ? "Watch a number from the Symbols or Tune tab, or turn one on with its swatch in the watch list below."
                 : "Connect to the target, then watch numbers from the Symbols or Tune tab to plot them."}
             </p>
           )}

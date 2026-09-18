@@ -31,6 +31,8 @@ export interface WatchSeed {
 export interface HostStartup {
   /** An ELF to open at once: a command-line argument, a launch configuration */
   elfPath: string | null;
+  /** Existing VS Code session to attach to without reconnecting the device. */
+  resumeSession?: number;
   /** A session to start at once, after the ELF opens */
   connect: ConnectRequest | null;
   /** Connection settings to offer, not connect with, when none are remembered (a launch configuration's chip) */
@@ -95,6 +97,10 @@ export interface Host {
   readonly name: "tauri" | "mock" | "vscode";
   readonly storage: HostStorage;
   startup(): Promise<HostStartup>;
+  /** Native actions changed the target; refresh app state without navigating the webview. */
+  watchStartup?(listener: () => void): () => void;
+  workbenchCommand?(command: string): Promise<void>;
+  watchRequests?(listener: (nodes: SymbolNode[]) => void): () => void;
   /** Calls `listener` with the current status at once, then on every change; returns an unsubscribe */
   watchStatus(listener: (status: HostStatus) => void): () => void;
   /** Ask the person for an ELF; null when they cancel */
