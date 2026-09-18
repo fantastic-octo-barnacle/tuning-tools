@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Children, RootNode, SymbolNode, symbolChildren } from "./api";
+import { host } from "../host";
+import { Children, RootNode, SymbolNode } from "./api";
 
 type ChildState = { status: "loading" } | { status: "error"; message: string } | ({ status: "ok" } & Children);
 
@@ -46,13 +47,13 @@ export function watchable(node: SymbolNode) {
 export interface RowNote {
   text: string;
   title?: string;
-  tone?: "ink" | "muted" | "led" | "danger";
+  tone?: "ink" | "muted" | "accent" | "danger";
 }
 
 const noteTone: Record<NonNullable<RowNote["tone"]>, string> = {
   ink: "text-ink",
   muted: "text-muted",
-  led: "text-led",
+  accent: "text-accent",
   danger: "text-danger",
 };
 
@@ -156,7 +157,8 @@ export function SymbolTree({
       next.add(key);
       if (node && !children.has(key)) {
         setChildren((m) => new Map(m).set(key, { status: "loading" }));
-        symbolChildren(node.ref)
+        host
+          .symbolChildren(node.ref)
           .then((c) => setChildren((m) => new Map(m).set(key, { status: "ok", ...c })))
           .catch((e) => setChildren((m) => new Map(m).set(key, { status: "error", message: String(e) })));
       }
@@ -191,13 +193,13 @@ export function SymbolTree({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-3 border-b border-rule px-3 py-2">
+      <div className="flex items-center gap-3 px-2 py-2">
         <input
           value={filter}
           onChange={(e) => setFilter(e.currentTarget.value)}
           placeholder="Filter by path"
           spellCheck={false}
-          className="min-w-0 flex-1 rounded-sm border border-rule bg-surface px-2 py-1 font-mono text-[12px] placeholder:text-muted"
+          className="min-w-0 flex-1 rounded-sm border border-rule bg-plot px-2 py-1 font-mono text-[12px] placeholder:text-faint"
         />
         {filters && (
           <>
@@ -206,7 +208,7 @@ export function SymbolTree({
                 type="checkbox"
                 checked={hideReadOnly}
                 onChange={(e) => setHideReadOnly(e.currentTarget.checked)}
-                className="accent-[var(--led)]"
+                className="accent-[var(--accent)]"
               />
               RAM only
             </label>
@@ -218,7 +220,7 @@ export function SymbolTree({
                 type="checkbox"
                 checked={hideInternal}
                 onChange={(e) => setHideInternal(e.currentTarget.checked)}
-                className="accent-[var(--led)]"
+                className="accent-[var(--accent)]"
               />
               App only
             </label>
@@ -271,7 +273,7 @@ export function SymbolTree({
               }}
               onDoubleClick={() => !isNs && row.node.expandable && toggle(row.key, row.node)}
               className={`group flex cursor-default items-center gap-1.5 border-l-2 pr-2 leading-[22px] select-none ${
-                isSelected ? "border-led bg-led-wash" : "border-transparent hover:bg-sunken"
+                isSelected ? "border-accent bg-accent-wash" : "border-transparent hover:bg-sunken"
               }`}
             >
               <button
@@ -308,9 +310,7 @@ export function SymbolTree({
                   ) : (
                     <span
                       title={row.node.wrapper ? `${row.node.typeName} inside ${row.node.wrapper}` : row.node.typeName}
-                      className={`ml-auto min-w-0 truncate pl-3 font-mono text-[11px] ${
-                        row.node.kind === "scalar" ? "text-scalar" : row.node.kind.endsWith("num") ? "text-enum" : "text-muted"
-                      }`}
+                      className="ml-auto min-w-0 truncate pl-3 font-mono text-[11px] text-faint"
                     >
                       {row.node.typeName}
                     </span>
@@ -325,7 +325,7 @@ export function SymbolTree({
                       title={row.node.expandable ? "Watch the numbers inside (W)" : "Watch (W)"}
                       className={`shrink-0 rounded-sm px-1.5 text-[11px] leading-[18px] hover:bg-panel ${
                         watched?.has(row.node.path)
-                          ? "text-led"
+                          ? "text-accent"
                           : isSelected
                             ? "text-muted"
                             : "invisible text-muted group-hover:visible"

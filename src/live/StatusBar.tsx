@@ -23,7 +23,7 @@ function Cell({ children, title, tone }: { children: React.ReactNode; title?: st
   return (
     <span
       title={title}
-      className={`shrink-0 border-l border-rule px-3 tabular-nums ${tone === "danger" ? "text-danger" : tone === "warn" ? "text-led" : ""}`}
+      className={`shrink-0 border-l border-rule px-3 py-[3px] tabular-nums ${tone === "danger" ? "text-danger" : tone === "warn" ? "text-warn" : ""}`}
     >
       {children}
     </span>
@@ -36,16 +36,17 @@ export function StatusBar({ elf, link, stats }: { elf: OpenedElf | null; link: L
   const lit = link.state === "connected";
 
   return (
-    <footer className="flex items-center overflow-hidden border-t border-rule bg-surface py-1 text-[12px] text-muted">
+    <footer data-statusbar className="flex items-stretch overflow-hidden border-t border-rule bg-surface text-[12px] whitespace-nowrap text-muted">
       {elf && (
-        <span className="shrink-0 truncate px-3" title={elf.summary.path}>
+        <span className="min-w-0 truncate px-3 py-[3px]" title={elf.summary.path}>
           {elf.summary.machine}, {ramStatics} RAM statics, parsed in {elf.parseMs} ms
         </span>
       )}
-      <span className="ml-auto flex min-w-0 items-center gap-2 border-l border-rule px-3">
+      <span className="ml-auto flex min-w-0 items-center gap-1.5 border-l border-rule px-3 py-[3px]">
         <span
           aria-hidden
-          className={`h-2 w-2 shrink-0 rounded-full ${lit ? "bg-led" : link.state === "failed" ? "bg-danger" : "bg-rule"}`}
+          data-lit={lit || undefined}
+          className={`h-[7px] w-[7px] shrink-0 rounded-full ${lit ? "bg-accent" : link.state === "failed" ? "bg-danger" : "bg-faint"}`}
         />
         <span className={link.state === "failed" ? "text-danger" : "text-ink"}>{linkText[link.state]}</span>
         {link.message && (

@@ -1,4 +1,4 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 
 export type Step =
   | { kind: "member"; value: string }
@@ -153,14 +153,32 @@ export interface OpenedElf {
   catalogError: string | null;
 }
 
-export const inDesktopApp = isTauri;
-
 export function openElf(path: string): Promise<OpenedElf> {
   return invoke("open_elf", { path });
 }
 
 export function symbolChildren(node: NodeRef, limit?: number): Promise<Children> {
   return invoke("symbol_children", { node, limit });
+}
+
+/**
+ * The node a symbol path names, e.g. `chassis::CHASSIS.wheels[0].speed`: the longest root that
+ * prefixes it, then members and indexes. Null when no root matches.
+ */
+export function refForPath(roots: RootNode[], path: string): NodeRef | null {
+  const root = roots
+    .filter((r) => path === r.path || path.startsWith(`${r.path}.`) || path.startsWith(`${r.path}[`))
+    .sort((a, b) => b.path.length - a.path.length)[0];
+  if (!root) return null;
+  const rest = path.slice(root.path.length);
+  const steps: Step[] = [];
+  const part = /\.([^.[\]]+)|\[(\d+)\]/y;
+  while (part.lastIndex < rest.length) {
+    const m = part.exec(rest);
+    if (!m) return null;
+    steps.push(m[1] !== undefined ? { kind: "member", value: m[1] } : { kind: "index", value: Number(m[2]) });
+  }
+  return { symbol: root.ref.symbol, steps: [...root.ref.steps, ...steps] };
 }
 
 export function hex(n: number): string {

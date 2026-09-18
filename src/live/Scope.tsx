@@ -1,202 +1,361 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
+import { Segmented, button, ghostButton } from "../ui";
+import { formatTicks } from "./format";
+import { Legend, LegendActions } from "./Legend";
+import { Readout, newReadout, notify, useReadout } from "./readout";
 import { samples } from "./samples";
 import { Watch } from "./useWatches";
 
 const WINDOWS = [2, 5, 10, 30, 60];
+const SETTINGS_KEY = "scope";
+
+type Layout = "lanes" | "overlay";
+
+interface Settings {
+  windowSec: number;
+  layout: Layout;
+}
+
+function loadSettings(): Settings {
+  const fallback: Settings = { windowSec: 10, layout: "lanes" };
+  try {
+    return { ...fallback, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") };
+  } catch {
+    return fallback;
+  }
+}
 
 function cssVar(name: string) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
 
-/** Keep at most two points (min and max) per horizontal pixel column. */
-function decimate(xs: number[], ys: (number | null)[], from: number, to: number, columns: number) {
-  if (xs.length <= columns * 4) return [xs, ys] as const;
-  const outX: number[] = [];
-  const outY: (number | null)[] = [];
-  const width = (to - from) / columns;
-  let i = 0;
-  while (i < xs.length) {
-    const bucketEnd = from + (Math.floor((xs[i] - from) / width) + 1) * width;
-    let lo = i;
-    let hi = i;
-    let j = i;
-    let gap = false;
-    for (; j < xs.length && xs[j] < bucketEnd; j++) {
-      const y = ys[j];
-      if (y === null) gap = true;
-      else {
-        if (ys[lo] === null || y < (ys[lo] as number)) lo = j;
-        if (ys[hi] === null || y > (ys[hi] as number)) hi = j;
-      }
-    }
-    for (const k of lo <= hi ? [lo, hi] : [hi, lo]) {
-      outX.push(xs[k]);
-      outY.push(ys[k]);
-    }
-    if (gap) {
-      outX.push(xs[j - 1]);
-      outY.push(null);
-    }
-    i = j;
-  }
-  return [outX, outY] as const;
+/** Traces that share a y-axis */
+export interface Lane {
+  key: string;
+  /** Unit of every trace in the lane; null for traces with none, a list when overlaid */
+  unit: string | null;
+  watches: Watch[];
 }
 
-interface Props {
+function laneGroups(watches: Watch[], layout: Layout): Lane[] {
+  const plotted = watches.filter((w) => w.plotted && w.trace !== null && !w.error);
+  if (plotted.length === 0) return [];
+  if (layout === "overlay") {
+    const units = [...new Set(plotted.map((w) => w.unit).filter((u) => u !== null))];
+    return [{ key: "all", unit: units.length ? units.join(", ") : null, watches: plotted }];
+  }
+  const byUnit = new Map<string, Watch[]>();
+  for (const w of plotted) {
+    const key = w.unit ?? "";
+    byUnit.set(key, [...(byUnit.get(key) ?? []), w]);
+  }
+  return [...byUnit].map(([unit, ws]) => ({ key: `unit:${unit}`, unit: unit || null, watches: ws }));
+}
+
+function CursorTime({ readout }: { readout: Readout }) {
+  useReadout(readout, 1000);
+  return (
+    <span className="min-w-[9ch] font-mono text-[12px] text-muted tabular-nums">
+      {readout.cursorT === null ? "" : `t = ${readout.cursorT.toFixed(3)} s`}
+    </span>
+  );
+}
+
+interface Props extends LegendActions {
   watches: Watch[];
   connected: boolean;
+  /** The core is stopped, so values hold still */
+  halted: boolean;
+  onToggleSide: () => void;
 }
 
-export function Scope({ watches, connected }: Props) {
-  const host = useRef<HTMLDivElement>(null);
-  const plot = useRef<uPlot | null>(null);
-  const [windowSec, setWindowSec] = useState(10);
-  const [paused, setPaused] = useState(false);
+export function Scope({ watches, connected, halted, onToggleSide, ...actions }: Props) {
+  const [settings, setSettings] = useState(loadSettings);
+  const [paused, setPausedState] = useState(false);
   const [theme, setTheme] = useState(0);
-  const view = useRef({ windowSec, paused, xMin: 0, xMax: 10 });
-  view.current.windowSec = windowSec;
-  view.current.paused = paused;
+  const [readout] = useState<Readout>(newReadout);
+  // The x window: follows the newest sample while live, holds still (or zooms) while paused
+  const view = useRef({ windowSec: settings.windowSec, paused: false, from: 0, to: settings.windowSec, dirty: true });
+  const hosts = useRef(new Map<string, HTMLDivElement>());
+  const plots = useRef<{ lane: Lane; u: uPlot }[]>([]);
+  const syncKey = useId();
 
-  const traces = watches.filter((w) => w.plotted && w.trace !== null);
-  const traceKey = traces.map((w) => `${w.id}:${w.trace}`).join(",");
+  const lanes = useMemo(() => laneGroups(watches, settings.layout), [watches, settings.layout]);
+  const structure = lanes.map((l) => `${l.key}=${l.watches.map((w) => `${w.id}:${w.trace}`).join(",")}`).join("|");
 
-  useEffect(() => {
-    const media = matchMedia("(prefers-color-scheme: dark)");
-    const bump = () => setTheme((t) => t + 1);
-    media.addEventListener("change", bump);
-    return () => media.removeEventListener("change", bump);
+  const update = (patch: Partial<Settings>) => {
+    const next = { ...settings, ...patch };
+    setSettings(next);
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+    } catch {
+      // Not remembered next launch; nothing else depends on it
+    }
+  };
+
+  const setPaused = useCallback((p: boolean) => {
+    view.current.paused = p;
+    view.current.dirty = true;
+    setPausedState(p);
   }, []);
 
-  // Rebuild the chart when the plotted set or theme changes
+  // Theme changes rebuild the canvases with the new colours
   useEffect(() => {
-    const el = host.current;
-    // Mode 2 needs at least one data series; the empty state covers this case
-    if (!el || traces.length === 0) return;
+    const bump = () => setTheme((t) => t + 1);
+    const media = matchMedia("(prefers-color-scheme: dark)");
+    media.addEventListener("change", bump);
+    const attrs = new MutationObserver(bump);
+    attrs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme", "data-host"] });
+    return () => {
+      media.removeEventListener("change", bump);
+      attrs.disconnect();
+    };
+  }, []);
+
+  // Space pauses and resumes, unless typing somewhere
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== " " || e.target !== document.body) return;
+      e.preventDefault();
+      setPaused(!view.current.paused);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [setPaused]);
+
+  // One uPlot per lane, rebuilt when the lanes, their traces or the theme change
+  useEffect(() => {
+    const axisFont = `11px ${cssVar("--font-code") || "monospace"}`;
     const axis = {
       stroke: cssVar("--muted"),
-      grid: { stroke: cssVar("--rule"), width: 1 },
-      ticks: { stroke: cssVar("--rule"), width: 1 },
-      font: `11px ${cssVar("--font-mono") || "monospace"}`,
+      grid: { stroke: cssVar("--grid"), width: 1 },
+      ticks: { stroke: cssVar("--grid"), width: 1, size: 4 },
+      font: axisFont,
+      gap: 3,
     };
-    const opts: uPlot.Options = {
-      mode: 2,
-      width: el.clientWidth,
-      height: el.clientHeight,
-      legend: { show: false },
-      cursor: { drag: { x: false, y: false }, points: { size: 6 } },
-      scales: {
-        x: { time: false, auto: false, range: () => [view.current.xMin, view.current.xMax] },
-        y: {
-          auto: true,
-          range: (_u, min, max) => {
-            if (min === max) return [min - 1, max + 1];
-            const pad = (max - min) * 0.08;
-            return [min - pad, max + pad];
+    const built = lanes.map((lane, i) => {
+      const el = hosts.current.get(lane.key)!;
+      const last = i === lanes.length - 1;
+      const onCursor = (u: uPlot) => {
+        const idx = u.cursor.idx;
+        if (idx === null || idx === undefined || (u.cursor.left ?? -1) < 0) {
+          readout.cursorT = null;
+          readout.cursor.clear();
+        } else {
+          // Every synced lane reports; each fills in its own traces
+          readout.cursorT = u.data[0][idx];
+          lane.watches.forEach((w, s) => readout.cursor.set(w.id, u.data[s + 1][idx] ?? null));
+        }
+        notify(readout);
+      };
+      const onSelect = (u: uPlot) => {
+        if (u.select.width < 4) return;
+        const from = u.posToVal(u.select.left, "x");
+        const to = u.posToVal(u.select.left + u.select.width, "x");
+        u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false);
+        view.current.from = from;
+        view.current.to = to;
+        setPaused(true);
+      };
+      const opts: uPlot.Options = {
+        width: Math.max(el.clientWidth, 10),
+        height: Math.max(el.clientHeight, 10),
+        legend: { show: false },
+        padding: [10, 10, last ? 0 : 4, 0],
+        cursor: {
+          sync: { key: syncKey },
+          drag: { x: true, y: false, setScale: false },
+          points: { size: 6, fill: cssVar("--plot") },
+        },
+        scales: {
+          // The window is set on every draw; see the frame loop
+          x: { time: false, auto: false },
+          y: {
+            auto: true,
+            range: (_u, min, max) => {
+              if (min === null || max === null) return [-1, 1];
+              // A value that barely moves keeps a readable span instead of magnifying float noise
+              const span = Math.max(max - min, Math.abs(max + min) * 0.01, 1e-6);
+              const mid = (max + min) / 2;
+              return [mid - span * 0.6, mid + span * 0.6];
+            },
           },
         },
-      },
-      axes: [
-        { ...axis, values: (_u, ticks) => ticks.map((t) => `${t.toFixed(t % 1 ? 1 : 0)} s`) },
-        { ...axis, size: 64 },
-      ],
-      series: [
-        {},
-        ...traces.map((w) => ({
-          label: w.path,
-          stroke: cssVar(`--trace-${(w.trace ?? 0) + 1}`),
-          width: 1.5,
-          spanGaps: false,
-          points: { show: false },
-        })),
-      ],
-    };
-    const empty: uPlot.AlignedData = [null as unknown as number[], ...traces.map(() => [[], []] as unknown as number[])];
-    const u = new uPlot(opts, empty, el);
-    plot.current = u;
-    const resize = new ResizeObserver(() => u.setSize({ width: el.clientWidth, height: el.clientHeight }));
-    resize.observe(el);
+        axes: [
+          {
+            ...axis,
+            size: last ? 26 : 0,
+            values: last ? (_u, ticks) => ticks.map((t) => `${+t.toFixed(3)} s`) : () => [],
+          },
+          { ...axis, size: 58, values: (_u, ticks, _axis, _space, step) => formatTicks(ticks, step) },
+        ],
+        series: [
+          {},
+          ...lane.watches.map((w) => ({
+            label: w.path,
+            stroke: cssVar(`--trace-${(w.trace ?? 0) + 1}`),
+            width: 1.5,
+            points: { show: false },
+            spanGaps: false,
+          })),
+        ],
+        hooks: { setCursor: [onCursor], setSelect: [onSelect] },
+      };
+      const u = new uPlot(opts, [[], ...lane.watches.map(() => [])], el);
+      u.over.addEventListener("dblclick", () => setPaused(false));
+      const resize = new ResizeObserver(() => {
+        u.setSize({ width: Math.max(el.clientWidth, 10), height: Math.max(el.clientHeight, 10) });
+        view.current.dirty = true;
+      });
+      resize.observe(el);
+      return { lane, u, resize };
+    });
+    plots.current = built;
+    view.current.dirty = true;
     return () => {
-      resize.disconnect();
-      u.destroy();
-      plot.current = null;
+      built.forEach(({ u, resize }) => {
+        resize.disconnect();
+        u.destroy();
+      });
+      plots.current = [];
+      readout.cursorT = null;
+      readout.cursor.clear();
     };
+    // `structure` stands for `lanes`
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [traceKey, theme]);
+  }, [structure, theme, syncKey, readout, setPaused]);
 
-  // Redraw on animation frames when new samples arrived
+  // Draw on animation frames when samples arrived or the view changed. uPlot evaluates a
+  // scale's `range` only when it is first set, so the window is set explicitly on every draw;
+  // leaving it to `setData` freezes the x-axis and new samples slide off its right edge.
   useEffect(() => {
     let raf = 0;
     let drawn = -1;
-    let drawnWindow = -1;
-    const ids = traces.map((w) => w.id);
     const tick = () => {
       raf = requestAnimationFrame(tick);
-      const u = plot.current;
       const v = view.current;
-      if (!u || v.paused) return;
-      if (samples.version === drawn && v.windowSec === drawnWindow) return;
+      if (!v.paused) {
+        if (samples.version === drawn && !v.dirty) return;
+        v.to = Math.max(samples.latestTime, v.windowSec);
+        v.from = v.to - v.windowSec;
+      } else if (!v.dirty) return;
+      v.dirty = false;
       drawn = samples.version;
-      drawnWindow = v.windowSec;
-      const to = Math.max(samples.latestTime, v.windowSec);
-      const from = to - v.windowSec;
-      v.xMin = from;
-      v.xMax = to;
-      const columns = Math.max(u.bbox.width / devicePixelRatio, 50);
-      const data = ids.map((id) => {
-        const { xs, ys } = samples.since(id, from);
-        return decimate(xs, ys, from, to, columns) as unknown as number[];
-      });
-      u.setData([null as unknown as number[], ...data] as uPlot.AlignedData);
+      for (const { lane, u } of plots.current) {
+        const ids = lane.watches.map((w) => w.id);
+        const shaped = samples.window(ids, v.from, v.to, Math.max(50, Math.floor(u.bbox.width / devicePixelRatio)));
+        ids.forEach((id, s) => readout.ranges.set(id, shaped.ranges[s]));
+        u.batch(() => {
+          u.setData(shaped.data as uPlot.AlignedData, false);
+          u.setScale("x", { min: v.from, max: v.to });
+        });
+      }
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [traceKey, theme]);
+  }, [readout]);
+
+  const setWindow = (windowSec: number) => {
+    update({ windowSec });
+    view.current.windowSec = windowSec;
+    setPaused(false);
+  };
+
+  const chip = halted
+    ? { text: "Target halted", dot: "rounded-full bg-danger" }
+    : paused
+      ? { text: "Paused", dot: "rounded-[1px] bg-warn" }
+      : connected
+        ? { text: "Live", dot: "rounded-full bg-good" }
+        : { text: "Not connected", dot: "rounded-full bg-faint" };
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-3 border-b border-rule px-3 py-1.5">
-        <h2 className="font-medium">Scope</h2>
-        <ul className="flex min-w-0 flex-1 gap-3 overflow-hidden text-[12px]">
-          {traces.map((w) => (
-            <li key={w.id} className="flex min-w-0 items-center gap-1.5" title={w.path}>
-              <span className="h-0.5 w-3 shrink-0" style={{ background: `var(--trace-${(w.trace ?? 0) + 1})` }} />
-              <span className="truncate font-mono text-[11px]">{w.path.split("::").pop()}</span>
-            </li>
-          ))}
-        </ul>
-        <label className="flex items-center gap-1.5 text-muted">
-          Window
-          <select
-            value={windowSec}
-            onChange={(e) => setWindowSec(Number(e.currentTarget.value))}
-            className="rounded-sm border border-rule bg-surface px-1 py-0.5 text-ink"
-          >
-            {WINDOWS.map((s) => (
-              <option key={s} value={s}>{s} s</option>
-            ))}
-          </select>
-        </label>
+    <section aria-label="Scope" className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] bg-surface">
+      <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b border-rule px-3 py-1">
         <button
-          onClick={() => setPaused((p) => !p)}
-          aria-pressed={paused}
-          className={`rounded-sm border border-rule px-2 py-0.5 ${paused ? "bg-led-wash" : "bg-panel hover:bg-sunken"}`}
+          onClick={onToggleSide}
+          title="Show or hide the side panel"
+          aria-label="Toggle side panel"
+          className={ghostButton}
         >
-          {paused ? "Resume" : "Pause"}
+          ☰
+        </button>
+        <h2 className="text-[13px] font-semibold">Scope</h2>
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-rule bg-panel pr-2.5 pl-2 text-[12px] leading-5">
+          <span aria-hidden className={`h-[7px] w-[7px] ${chip.dot}`} />
+          {chip.text}
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="text-muted">Window</span>
+          <Segmented
+            label="Window"
+            value={paused ? null : settings.windowSec}
+            onChange={setWindow}
+            options={WINDOWS.map((s) => ({ value: s, label: `${s} s` }))}
+          />
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className="text-muted">Layout</span>
+          <Segmented
+            label="Layout"
+            value={settings.layout}
+            onChange={(layout) => update({ layout })}
+            options={[
+              { value: "lanes", label: "Lanes by unit", title: "One lane per unit; each lane scales its own y-axis" },
+              { value: "overlay", label: "Overlay", title: "Every trace on one y-axis" },
+            ]}
+          />
+        </span>
+        <span className="flex-1" />
+        <CursorTime readout={readout} />
+        <button
+          onClick={() => setPaused(!paused)}
+          title={paused ? "Double-clicking the plot also returns to live" : "Freeze the plot; drag across a lane to zoom"}
+          className={`${button} text-[12px]`}
+        >
+          {paused ? "Back to live" : "Pause"}
         </button>
       </div>
-      <div className="relative min-h-0 flex-1">
-        <div ref={host} className="absolute inset-0" />
-        {traces.length === 0 && (
-          <p className="pointer-events-none absolute inset-0 flex items-center justify-center p-6 text-center text-muted">
-            {connected
-              ? "Watch a number from the symbol tree to plot it here."
-              : "Connect to the target, then watch numbers from the symbol tree to plot them."}
-          </p>
-        )}
+      <div className="grid min-h-0 grid-cols-[minmax(0,1fr)_290px] max-[900px]:grid-cols-1 max-[900px]:grid-rows-[minmax(0,1fr)_150px]">
+        <div
+          className="relative flex min-h-0 min-w-0 flex-col bg-plot"
+          onPointerLeave={() => {
+            readout.cursorT = null;
+            readout.cursor.clear();
+            notify(readout);
+          }}
+        >
+          {lanes.map((lane) => (
+            <div key={lane.key} className="relative min-h-0 flex-1 basis-0 border-b border-grid last:border-b-0">
+              <span className="pointer-events-none absolute top-1 left-[62px] z-[2] rounded-sm bg-plot/85 px-1 text-[11px] text-muted">
+                {lane.unit ?? (settings.layout === "overlay" ? "all traces" : "no unit")}
+              </span>
+              <div
+                ref={(el) => {
+                  if (el) hosts.current.set(lane.key, el);
+                  else hosts.current.delete(lane.key);
+                }}
+                className="absolute inset-0"
+              />
+            </div>
+          ))}
+          {halted && lanes.length > 0 && (
+            <div className="absolute top-2.5 left-1/2 z-[5] -translate-x-1/2 rounded-sm border border-danger bg-surface px-2.5 py-1 text-[12px] shadow-md">
+              The core is halted. Values hold until it runs again.
+            </div>
+          )}
+          {lanes.length === 0 && (
+            <p className="absolute inset-0 flex items-center justify-center p-6 text-center text-muted">
+              {connected
+                ? "Watch a number from the Symbols or Tune tab, or turn one on with its swatch in the list on the right."
+                : "Connect to the target, then watch numbers from the Symbols or Tune tab to plot them."}
+            </p>
+          )}
+        </div>
+        <Legend lanes={lanes} watches={watches} overlay={settings.layout === "overlay"} readout={readout} {...actions} />
       </div>
-    </div>
+    </section>
   );
 }

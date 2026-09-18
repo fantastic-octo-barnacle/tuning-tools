@@ -1,15 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SymbolNode, Task, TaskPoint, hex, shortLocation } from "../elf/api";
-import {
-  Carrier,
-  TaskSnapshot,
-  TaskState,
-  TaskStatus,
-  ValueRead,
-  readValues,
-  taskStates,
-  watchableLeaves,
-} from "./api";
+import { host } from "../host";
+import { Carrier, TaskSnapshot, TaskState, TaskStatus, ValueRead } from "./api";
 import { formatValue } from "./format";
 
 /** Between reads of task states and locals; people read these, they do not plot them */
@@ -48,12 +40,18 @@ function usePoll<T>(live: boolean, read: (() => Promise<T>) | null, deps: unknow
   return { value, error };
 }
 
-type Tone = "ink" | "muted" | "led" | "danger";
+type Tone = "ink" | "muted" | "warn" | "danger";
 const toneClass: Record<Tone, string> = {
   ink: "text-ink",
   muted: "text-muted",
-  led: "text-led",
+  warn: "text-ink",
   danger: "text-danger",
+};
+const dotClass: Record<Tone, string> = {
+  ink: "bg-faint",
+  muted: "border border-faint",
+  warn: "bg-warn",
+  danger: "bg-danger",
 };
 
 /** What a task is doing, in a word, and why */
@@ -63,11 +61,11 @@ function describe(status: TaskStatus | undefined): { text: string; tone: Tone; t
   if (!state) return { text: "unreadable", tone: "danger", title: status.error ?? undefined };
   if (!state.spawned) return { text: "not running", tone: "muted", title: "Not spawned, or already finished" };
   const label = state.at?.label;
-  if (label === "Unresumed") return { text: "not started", tone: "led", title: "Spawned, not yet polled" };
+  if (label === "Unresumed") return { text: "not started", tone: "warn", title: "Spawned, not yet polled" };
   if (label === "Returned") return { text: "returned", tone: "muted" };
   if (label === "Panicked") return { text: "panicked", tone: "danger" };
   return state.queued
-    ? { text: "ready", tone: "led", title: "Woken, waiting in the run queue to be polled" }
+    ? { text: "ready", tone: "warn", title: "Woken, waiting in the run queue to be polled" }
     : { text: "waiting", tone: "ink", title: "Parked on an .await until something wakes it" };
 }
 
@@ -152,7 +150,7 @@ export function TasksView({ tasks, connected, carrier, onWatch, watched }: Props
   const live = connected && carrier === "probe";
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [byCpu, setByCpu] = useState(false);
-  const { value: snapshot, error } = usePoll(live, taskStates, [tasks]);
+  const { value: snapshot, error } = usePoll(live, host.taskStates, [tasks]);
   const statuses = snapshot?.tasks ?? null;
 
   // Recent reads, for rates; restarted when the ELF, link or clock changes
@@ -206,11 +204,10 @@ export function TasksView({ tasks, connected, carrier, onWatch, watched }: Props
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-3 border-b border-rule px-3 py-1.5">
-        <h2 className="font-medium">Tasks</h2>
-        <span className="min-w-0 truncate text-[12px] text-muted tabular-nums">{summary}</span>
-        <span className="ml-auto shrink-0 text-[12px] text-muted tabular-nums" title="Sum of every task's future">
+    <div className="flex h-full min-h-0 flex-col text-[12px]">
+      <div className="flex items-center gap-3 border-b border-grid px-3 py-1">
+        <span className="min-w-0 truncate text-muted tabular-nums">{summary}</span>
+        <span className="ml-auto shrink-0 text-muted tabular-nums" title="Sum of every task's future">
           {bytes(ram)} in futures
         </span>
       </div>
@@ -230,31 +227,31 @@ export function TasksView({ tasks, connected, carrier, onWatch, watched }: Props
               )}
               <col className="w-[10%]" />
             </colgroup>
-            <thead className="sticky top-0 bg-surface text-left text-[11px] text-muted">
+            <thead className="sticky top-0 bg-surface text-left text-muted">
               <tr className="border-b border-rule">
-                <th className="py-1 pl-3 font-normal">
+                <th className="py-1 pl-3 font-medium">
                   <button onClick={() => setByCpu(false)} className={byCpu ? "hover:text-ink" : "text-ink"}>
                     Task
                   </button>
                 </th>
-                <th className="py-1 pl-2 font-normal">State</th>
-                <th className="py-1 pl-2 font-normal">Waiting at</th>
+                <th className="py-1 pl-2 font-medium">State</th>
+                <th className="py-1 pl-2 font-medium">Parked at</th>
                 {hasStats && (
                   <>
-                    <th className="py-1 pr-2 text-right font-normal" title="Share of time spent polling the task, over the last two seconds. Interrupts during a poll count toward it.">
+                    <th className="py-1 pr-2 text-right font-medium" title="Share of time spent polling the task, over the last two seconds. Interrupts during a poll count toward it.">
                       <button onClick={() => setByCpu(true)} className={byCpu ? "text-ink" : "hover:text-ink"}>
                         CPU{byCpu && " ▾"}
                       </button>
                     </th>
-                    <th className="py-1 pr-2 text-right font-normal" title="Polls per second: how often the task wakes and runs">
+                    <th className="py-1 pr-2 text-right font-medium" title="Polls per second: how often the task wakes and runs">
                       Polls/s
                     </th>
-                    <th className="py-1 pr-2 text-right font-normal" title="Longest single poll in the last one to two seconds: the longest the task kept every other task waiting">
+                    <th className="py-1 pr-2 text-right font-medium" title="Longest single poll in the last one to two seconds: the longest the task kept every other task waiting">
                       Longest
                     </th>
                   </>
                 )}
-                <th className="py-1 pr-3 text-right font-normal" title="The async fn's future: its arguments and the locals it keeps across an .await">
+                <th className="py-1 pr-3 text-right font-medium" title="The async fn's future: its arguments and the locals it keeps across an .await">
                   Future
                 </th>
               </tr>
@@ -273,16 +270,19 @@ export function TasksView({ tasks, connected, carrier, onWatch, watched }: Props
                     key={t.root.path}
                     aria-selected={isSelected}
                     onClick={() => setSelectedPath(isSelected ? null : t.root.path)}
-                    className={`cursor-default border-b border-rule/60 ${isSelected ? "bg-led-wash" : "hover:bg-sunken/50"}`}
+                    className={`cursor-default border-b border-grid ${isSelected ? "bg-accent-wash" : "hover:bg-panel"}`}
                   >
                     <td className="truncate py-1 pl-3" title={t.root.path}>
                       <span className="font-mono">{t.root.label}</span>
                       {module && <span className="pl-2 text-[11px] text-muted">{module}</span>}
                     </td>
                     <td className={`truncate py-1 pl-2 ${toneClass[state.tone]}`} title={state.title}>
+                      {state.text && (
+                        <span aria-hidden className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle ${dotClass[state.tone]}`} />
+                      )}
                       {state.text}
                     </td>
-                    <td className="truncate py-1 pl-2 font-mono text-[11px]" title={at ? `${fullLocation(at)} (${at.label})` : undefined}>
+                    <td className="truncate py-1 pl-2 font-mono text-muted" title={at ? `${fullLocation(at)} (${at.label})` : undefined}>
                       {at?.location && at.label.startsWith("Suspend") ? shortLocation(at.location) : ""}
                     </td>
                     {hasStats && (
@@ -290,8 +290,11 @@ export function TasksView({ tasks, connected, carrier, onWatch, watched }: Props
                         <td className="py-1 pr-2 text-right font-mono tabular-nums">
                           {l && counted && (
                             <>
+                              <span aria-hidden className="mr-1.5 inline-block h-1.5 w-[40%] overflow-hidden rounded-[1px] bg-grid align-middle">
+                                {/* Full at 20 %: a control task above that is worth a look */}
+                                <span className="block h-full bg-muted" style={{ width: `${Math.min(l.cpu * 5, 100)}%` }} />
+                              </span>
                               {percent(l.cpu)}
-                              <div className="ml-auto h-0.5 bg-led" style={{ width: `${Math.min(l.cpu, 100)}%` }} />
                             </>
                           )}
                         </td>
@@ -312,7 +315,7 @@ export function TasksView({ tasks, connected, carrier, onWatch, watched }: Props
               })}
             </tbody>
           </table>
-          {statsNote && <p className="px-3 py-2 text-[12px] text-muted">{statsNote}</p>}
+          {statsNote && <p className="px-3 py-2 text-muted">{statsNote}</p>}
         </div>
         {selected && (
           <TaskDetail
@@ -386,10 +389,10 @@ function TaskDetail({ task, state, load, live, onWatch, watched, onClose }: Deta
                   aria-pressed={isShown}
                   title={p.location ? fullLocation(p) : undefined}
                   className={`flex w-full items-center gap-2 rounded-sm px-1.5 py-0.5 text-left ${
-                    isShown ? "bg-sunken" : "hover:bg-sunken/50"
+                    isShown ? "bg-sunken" : "hover:bg-panel"
                   }`}
                 >
-                  <span className={`w-2 text-[9px] ${isCurrent ? "text-led" : "invisible"}`} aria-hidden>
+                  <span className={`w-2 text-[9px] ${isCurrent ? "text-accent" : "invisible"}`} aria-hidden>
                     ●
                   </span>
                   <span className="font-mono text-[12px]">
@@ -432,9 +435,9 @@ function Locals({ point, live, stale, onWatch, watched }: LocalsProps) {
   const [leaves, setLeaves] = useState<SymbolNode[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    watchableLeaves(point.ref).then(setLeaves, (e) => setError(String(e)));
+    host.watchableLeaves(point.ref).then(setLeaves, (e) => setError(String(e)));
   }, [point.ref]);
-  const read = useMemo(() => (leaves?.length ? () => readValues(leaves.map((l) => l.ref)) : null), [leaves]);
+  const read = useMemo(() => (leaves?.length ? () => host.readValues(leaves.map((l) => l.ref)) : null), [leaves]);
   const { value: values, error: readError } = usePoll<ValueRead[]>(live, read, [read]);
 
   const where = point.label === "Unresumed" ? "Arguments, before the first poll" : `Kept across ${point.location ? shortLocation(point.location) : point.label}`;
@@ -445,7 +448,7 @@ function Locals({ point, live, stale, onWatch, watched }: LocalsProps) {
     <section className="mt-2 border-t border-rule">
       <h4 className="px-3 pt-2 pb-1 text-[11px] text-muted">{where}</h4>
       {stale && (
-        <p className="px-3 pb-1 text-[11px] text-led">
+        <p className="px-3 pb-1 text-[11px] text-warn">
           The task is not in this state; these bytes hold another state's data right now.
         </p>
       )}
@@ -464,7 +467,7 @@ function Locals({ point, live, stale, onWatch, watched }: LocalsProps) {
               const read = values?.[i];
               const isWatched = watched.has(leaf.path);
               return (
-                <tr key={leaf.path} className="group border-b border-rule/60 hover:bg-sunken/50">
+                <tr key={leaf.path} className="group border-b border-grid hover:bg-panel">
                   <td className="truncate py-0.5 pl-3 font-mono" title={`${leaf.path}\n${leaf.typeName}`}>
                     {name(leaf)}
                   </td>
@@ -481,7 +484,7 @@ function Locals({ point, live, stale, onWatch, watched }: LocalsProps) {
                       onClick={() => onWatch(leaf)}
                       title={`Watch and plot this value. It only means something ${onlyHere}.`}
                       className={`rounded-sm px-1.5 text-[11px] hover:bg-panel ${
-                        isWatched ? "text-led" : "invisible text-muted group-hover:visible"
+                        isWatched ? "text-accent" : "invisible text-muted group-hover:visible"
                       }`}
                     >
                       {isWatched ? "Watching" : "Watch"}

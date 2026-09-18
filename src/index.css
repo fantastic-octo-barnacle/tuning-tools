@@ -1,67 +1,189 @@
 @import "tailwindcss";
 
+/* Desktop app, light: the instrument-panel palette */
 :root {
   --panel: #e4e6e1;
   --surface: #f3f4f1;
+  --plot: #fbfbf9;
   --sunken: #d7dad3;
   --rule: #c3c7bf;
+  --grid: #e2e4de;
   --ink: #1f2528;
   --muted: #5d666a;
-  --led: #b87800;
-  --led-wash: #f1dfb4;
-  --scalar: #2f5f86;
-  --enum: #7a4a78;
+  --faint: #8a9295;
+  --accent: #b87800;
+  --accent-ink: #1f2528;
+  --accent-wash: #f1dfb4;
+  --good: #0c7a0c;
+  --warn: #a86a00;
   --danger: #a33a2c;
-  --trace-1: #b87800;
-  --trace-2: #2f6fa6;
-  --trace-3: #3d8a4f;
-  --trace-4: #b0452f;
-  --trace-5: #7a4a9e;
-  --trace-6: #1d8a8a;
-  --trace-7: #8a6a3a;
-  --trace-8: #c0487e;
+  --info: #2f5f86;
+  --select: rgba(31, 37, 40, 0.08);
+  /* Trace colours; this set passes colour-blind separation checks in both themes */
+  --trace-1: #2a78d6;
+  --trace-2: #eb6834;
+  --trace-3: #1baf7a;
+  --trace-4: #eda100;
+  --trace-5: #e87ba4;
+  --trace-6: #008300;
+  --trace-7: #4a3aa7;
+  --trace-8: #e34948;
+  --font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-code: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+  --radius: 2px;
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --panel: #22272a;
     --surface: #2b3134;
+    --plot: #1f2427;
     --sunken: #1b1f21;
     --rule: #3c4447;
+    --grid: #30373a;
     --ink: #e2e5e1;
     --muted: #97a0a3;
-    --led: #f0a91f;
-    --led-wash: #4a3b17;
-    --scalar: #8db8dc;
-    --enum: #cf9fcc;
+    --faint: #6d777a;
+    --accent: #f0a91f;
+    --accent-ink: #1b1f21;
+    --accent-wash: #4a3b17;
+    --good: #4cc24c;
+    --warn: #f0a91f;
     --danger: #f08a78;
-    --trace-1: #f0a91f;
-    --trace-2: #6fb0e8;
-    --trace-3: #7cc98a;
-    --trace-4: #f0856c;
-    --trace-5: #bf98e6;
-    --trace-6: #5fd0cc;
-    --trace-7: #d9b27a;
-    --trace-8: #f08cba;
+    --info: #8db8dc;
+    --select: rgba(226, 229, 225, 0.1);
+    --trace-1: #3987e5;
+    --trace-2: #d95926;
+    --trace-3: #199e70;
+    --trace-4: #c98500;
+    --trace-5: #d55181;
+    --trace-6: #008300;
+    --trace-7: #9085e9;
+    --trace-8: #e66767;
     color-scheme: dark;
   }
+}
+
+:root[data-theme="dark"] {
+  --panel: #22272a;
+  --surface: #2b3134;
+  --plot: #1f2427;
+  --sunken: #1b1f21;
+  --rule: #3c4447;
+  --grid: #30373a;
+  --ink: #e2e5e1;
+  --muted: #97a0a3;
+  --faint: #6d777a;
+  --accent: #f0a91f;
+  --accent-ink: #1b1f21;
+  --accent-wash: #4a3b17;
+  --good: #4cc24c;
+  --warn: #f0a91f;
+  --danger: #f08a78;
+  --info: #8db8dc;
+  --select: rgba(226, 229, 225, 0.1);
+  --trace-1: #3987e5;
+  --trace-2: #d95926;
+  --trace-3: #199e70;
+  --trace-4: #c98500;
+  --trace-5: #d55181;
+  --trace-6: #008300;
+  --trace-7: #9085e9;
+  --trace-8: #e66767;
+  color-scheme: dark;
+}
+
+/*
+ * Inside a VS Code webview the editor's theme wins. VS Code defines --vscode-* on the webview's
+ * root; the fallbacks are Default Light Modern and Default Dark Modern for a page opened outside
+ * it. The host sets data-theme from the webview's body class so the trace palette follows too.
+ */
+:root[data-host="vscode"] {
+  --panel: var(--vscode-sideBar-background, #f8f8f8);
+  --surface: var(--vscode-editor-background, #ffffff);
+  --plot: var(--vscode-editor-background, #ffffff);
+  --sunken: var(--vscode-list-hoverBackground, #ececec);
+  --rule: var(--vscode-panel-border, #e0e0e0);
+  --grid: var(--vscode-editorIndentGuide-background1, #efefef);
+  --ink: var(--vscode-foreground, #3b3b3b);
+  --muted: var(--vscode-descriptionForeground, #6e6e6e);
+  --faint: var(--vscode-disabledForeground, #9a9a9a);
+  --accent: var(--vscode-button-background, #005fb8);
+  --accent-ink: var(--vscode-button-foreground, #ffffff);
+  --accent-wash: var(--vscode-list-activeSelectionBackground, #dbe9f7);
+  --good: var(--vscode-testing-iconPassed, #0c7a0c);
+  --warn: var(--vscode-editorWarning-foreground, #a86a00);
+  --danger: var(--vscode-errorForeground, #a33a2c);
+  --info: var(--vscode-editorInfo-foreground, #2f5f86);
+  --select: var(--vscode-editor-selectionHighlightBackground, rgba(0, 95, 184, 0.1));
+  --font-ui: var(--vscode-font-family, system-ui, -apple-system, "Segoe UI", sans-serif);
+  --font-code: var(--vscode-editor-font-family, ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace);
+  --radius: 3px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root[data-host="vscode"]:not([data-theme="light"]) {
+    --panel: var(--vscode-sideBar-background, #181818);
+    --surface: var(--vscode-editor-background, #1f1f1f);
+    --plot: var(--vscode-editor-background, #1f1f1f);
+    --sunken: var(--vscode-list-hoverBackground, #141414);
+    --rule: var(--vscode-panel-border, #2b2b2b);
+    --grid: var(--vscode-editorIndentGuide-background1, #2a2a2a);
+    --ink: var(--vscode-foreground, #cccccc);
+    --muted: var(--vscode-descriptionForeground, #9d9d9d);
+    --faint: var(--vscode-disabledForeground, #6e6e6e);
+    --accent: var(--vscode-button-background, #0078d4);
+    --accent-ink: var(--vscode-button-foreground, #ffffff);
+    --accent-wash: var(--vscode-list-activeSelectionBackground, #0d3a5e);
+    --good: var(--vscode-testing-iconPassed, #4cc24c);
+    --warn: var(--vscode-editorWarning-foreground, #f0a91f);
+    --danger: var(--vscode-errorForeground, #f08a78);
+    --info: var(--vscode-editorInfo-foreground, #8db8dc);
+    --select: var(--vscode-editor-selectionHighlightBackground, rgba(0, 120, 212, 0.18));
+  }
+}
+
+:root[data-host="vscode"][data-theme="dark"] {
+  --panel: var(--vscode-sideBar-background, #181818);
+  --surface: var(--vscode-editor-background, #1f1f1f);
+  --plot: var(--vscode-editor-background, #1f1f1f);
+  --sunken: var(--vscode-list-hoverBackground, #141414);
+  --rule: var(--vscode-panel-border, #2b2b2b);
+  --grid: var(--vscode-editorIndentGuide-background1, #2a2a2a);
+  --ink: var(--vscode-foreground, #cccccc);
+  --muted: var(--vscode-descriptionForeground, #9d9d9d);
+  --faint: var(--vscode-disabledForeground, #6e6e6e);
+  --accent: var(--vscode-button-background, #0078d4);
+  --accent-ink: var(--vscode-button-foreground, #ffffff);
+  --accent-wash: var(--vscode-list-activeSelectionBackground, #0d3a5e);
+  --good: var(--vscode-testing-iconPassed, #4cc24c);
+  --warn: var(--vscode-editorWarning-foreground, #f0a91f);
+  --danger: var(--vscode-errorForeground, #f08a78);
+  --info: var(--vscode-editorInfo-foreground, #8db8dc);
+  --select: var(--vscode-editor-selectionHighlightBackground, rgba(0, 120, 212, 0.18));
 }
 
 @theme inline {
   --color-panel: var(--panel);
   --color-surface: var(--surface);
+  --color-plot: var(--plot);
   --color-sunken: var(--sunken);
   --color-rule: var(--rule);
+  --color-grid: var(--grid);
   --color-ink: var(--ink);
   --color-muted: var(--muted);
-  --color-led: var(--led);
-  --color-led-wash: var(--led-wash);
-  --color-scalar: var(--scalar);
-  --color-enum: var(--enum);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-wash: var(--accent-wash);
+  --color-good: var(--good);
+  --color-warn: var(--warn);
   --color-danger: var(--danger);
-  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+  --color-info: var(--info);
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-code);
+  --radius-sm: var(--radius);
 }
 
 html,
@@ -71,20 +193,51 @@ body,
 }
 
 body {
+  margin: 0;
+  overflow: hidden;
   background: var(--panel);
   color: var(--ink);
-  font-family: var(--font-sans);
+  font-family: var(--font-ui);
   font-size: 13px;
+  line-height: 1.4;
   -webkit-font-smoothing: antialiased;
 }
 
 :focus-visible {
-  outline: 2px solid var(--led);
+  outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
 
 @media (prefers-reduced-motion: reduce) {
   * {
     transition: none !important;
+    animation: none !important;
   }
+}
+
+/* uPlot: selection, cursor and hover points in the app's colours */
+.uplot .u-select {
+  background: var(--select);
+}
+.uplot.u-hz .u-cursor-x,
+.uplot.u-vt .u-cursor-y {
+  border-right: 1px dashed var(--muted);
+}
+.uplot.u-hz .u-cursor-y,
+.uplot.u-vt .u-cursor-x {
+  border-bottom: 1px dashed var(--muted);
+}
+
+/* VS Code's own status bar colours */
+:root[data-host="vscode"] [data-statusbar] {
+  background: var(--vscode-statusBar-background, var(--accent));
+  color: var(--vscode-statusBar-foreground, var(--accent-ink));
+  border-top-color: transparent;
+}
+:root[data-host="vscode"] [data-statusbar] * {
+  color: inherit;
+  border-color: color-mix(in srgb, currentColor 25%, transparent);
+}
+:root[data-host="vscode"] [data-statusbar] [data-lit] {
+  background: currentColor;
 }

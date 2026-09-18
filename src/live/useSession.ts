@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { Catalog } from "../elf/api";
-import { Channel } from "@tauri-apps/api/core";
-import * as api from "./api";
+import { host } from "../host";
+import type * as api from "./api";
 import { samples } from "./samples";
 
 const MAX_LOG_LINES = 5000;
@@ -15,6 +15,17 @@ export interface Link {
 export interface Tune {
   check: api.CatalogCheck;
   values: Map<number, api.TuneValue>;
+  /**
+   * Requested values as of the first read or the last save in this session. The firmware does
+   * not report what its flash holds, so this is the best guess at what the robot boots with.
+   */
+  saved: Map<number, number>;
+}
+
+function requestedValues(values: Map<number, api.TuneValue>) {
+  const out = new Map<number, number>();
+  for (const [id, v] of values) if (v.requested !== null) out.set(id, v.requested);
+  return out;
 }
 
 export function useSession() {
@@ -38,39 +49,45 @@ export function useSession() {
     const carrier = request.carrier;
     setLink({ state: "connecting", message: null, carrier });
 
-    const data = new Channel<ArrayBuffer>((frame) => {
-      if (live()) samples.ingest(frame);
-    });
-    const events = new Channel<api.SessionEvent>((event) => {
-      if (!live()) return;
-      if (event.type === "status") {
-        setLink({ state: event.state, message: event.message, carrier });
-        if (event.state !== "connected") {
-          setStats(null);
-          setTune(null);
-        }
-      } else if (event.type === "catalog") {
-        setCatalog(event.catalog);
-      } else if (event.type === "tune") {
-        setTune({ check: event.check, values: new Map(event.values.map((v) => [v.id, v])) });
-      } else if (event.type === "stats") {
-        setStats(event);
-      } else {
-        setLogs((old) => {
-          const next = old.concat(event.lines);
-          return next.length > MAX_LOG_LINES ? next.slice(next.length - MAX_LOG_LINES) : next;
-        });
-      }
-    });
     try {
-      await api.connect(request, data, events);
+      await host.connect(request, {
+        frame: (frame) => {
+          if (live()) samples.ingest(frame);
+        },
+        event: (event) => {
+          if (!live()) return;
+          if (event.type === "status") {
+            setLink({ state: event.state, message: event.message, carrier });
+            if (event.state !== "connected") {
+              setStats(null);
+              setTune(null);
+            }
+          } else if (event.type === "catalog") {
+            setCatalog(event.catalog);
+          } else if (event.type === "tune") {
+            const values = new Map(event.values.map((v) => [v.id, v]));
+            setTune((old) => ({
+              check: event.check,
+              values,
+              saved: old?.saved.size ? old.saved : requestedValues(values),
+            }));
+          } else if (event.type === "stats") {
+            setStats(event);
+          } else {
+            setLogs((old) => {
+              const next = old.concat(event.lines);
+              return next.length > MAX_LOG_LINES ? next.slice(next.length - MAX_LOG_LINES) : next;
+            });
+          }
+        },
+      });
     } catch (e) {
       if (live()) setLink({ state: "failed", message: String(e), carrier });
     }
   }, []);
 
   const disconnect = useCallback(async () => {
-    await api.disconnect();
+    await host.disconnect();
     setTune(null);
     // The session reports `disconnected` itself; this covers a session that never started
     setLink((l) =>
@@ -78,7 +95,13 @@ export function useSession() {
     );
   }, []);
 
+  /** Keep every requested tuning value across a power cycle */
+  const save = useCallback(async () => {
+    await host.saveValues();
+    setTune((t) => t && { ...t, saved: requestedValues(t.values) });
+  }, []);
+
   const clearLogs = useCallback(() => setLogs([]), []);
 
-  return { link, stats, logs, tune, catalog, connect, disconnect, clearLogs };
+  return { link, stats, logs, tune, catalog, connect, disconnect, save, clearLogs };
 }
