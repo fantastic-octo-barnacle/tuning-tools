@@ -1,5 +1,5 @@
-//! ELF loading and symbol browsing commands. Parsing runs on a blocking thread;
-//! the parsed `ElfInfo` is kept so tree expansion does not re-read the file.
+//! ELF loading and symbol browsing. The parsed `ElfInfo` is kept so tree
+//! expansion does not re-read the file.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -11,9 +11,8 @@ use studio_dwarf::task_stats::StatsLayout;
 use studio_dwarf::tasks::{self, Task, TaskProbe};
 use studio_dwarf::tree::{self, Children, ElfSummary, RootNode};
 use studio_dwarf::{ElfInfo, ElfParser, NodeRef};
-use tauri::State;
 
-use crate::session::SessionState;
+use crate::StudioApp;
 
 pub type Tuning = Arc<(TableLayout, Catalog)>;
 /// How to read each task's state, as `(task path, slot address, probe)`,
@@ -60,63 +59,65 @@ impl LoadedElf {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenedElf {
-    summary: ElfSummary,
-    roots: Vec<RootNode>,
+    pub summary: ElfSummary,
+    pub roots: Vec<RootNode>,
     /// embassy task slots, browsable like roots
-    tasks: Vec<Task>,
-    parse_ms: u64,
-    catalog: Option<Catalog>,
+    pub tasks: Vec<Task>,
+    pub parse_ms: u64,
+    pub catalog: Option<Catalog>,
     /// Why a declared tuning table could not be read
-    catalog_error: Option<String>,
+    pub catalog_error: Option<String>,
 }
 
-#[tauri::command]
-pub async fn open_elf(
-    path: PathBuf,
-    state: State<'_, LoadedElf>,
-    session: State<'_, SessionState>,
-) -> Result<OpenedElf, String> {
-    let started = Instant::now();
-    let (elf, tuning) = tauri::async_runtime::spawn_blocking(move || {
+impl StudioApp {
+    /// Parse the ELF and make it the current one. Blocks on disk I/O and DWARF parsing.
+    pub fn open_elf(&self, path: PathBuf) -> Result<OpenedElf, String> {
+        let started = Instant::now();
         let elf = ElfParser::parse(&path).map_err(|e| e.to_string())?;
         let tuning = read_catalog(&elf);
-        Ok::<_, String>((elf, tuning))
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    let elf = Arc::new(elf);
-    let (tuning, catalog_error) = match tuning {
-        Ok(tuning) => (tuning.map(Arc::new), None),
-        Err(e) => (None, Some(e)),
-    };
-    let tasks = tasks::tasks(&elf);
-    let probes = tasks
-        .iter()
-        .map(|t| {
-            let probe = tasks::probe(&elf, &t.root.node.node).map_err(|e| e.to_string());
-            (t.root.node.path.clone(), t.root.node.address, probe)
-        })
-        .collect();
-    let stats = StatsLayout::find(&elf)
-        .map_err(|e| e.to_string())
-        .transpose()
-        .map(|s| s.map(Arc::new));
-    let opened = OpenedElf {
-        summary: tree::summary(&elf),
-        roots: tree::roots(&elf),
-        tasks,
-        parse_ms: started.elapsed().as_millis() as u64,
-        catalog: tuning.as_ref().map(|t| t.1.clone()),
-        catalog_error,
-    };
-    session.set_tuning(tuning.clone());
-    *state.0.lock().expect("elf state poisoned") = Some(Loaded {
-        elf,
-        tuning,
-        probes: Arc::new(probes),
-        stats,
-    });
-    Ok(opened)
+        let elf = Arc::new(elf);
+        let (tuning, catalog_error) = match tuning {
+            Ok(tuning) => (tuning.map(Arc::new), None),
+            Err(e) => (None, Some(e)),
+        };
+        let tasks = tasks::tasks(&elf);
+        let probes = tasks
+            .iter()
+            .map(|t| {
+                let probe = tasks::probe(&elf, &t.root.node.node).map_err(|e| e.to_string());
+                (t.root.node.path.clone(), t.root.node.address, probe)
+            })
+            .collect();
+        let stats = StatsLayout::find(&elf)
+            .map_err(|e| e.to_string())
+            .transpose()
+            .map(|s| s.map(Arc::new));
+        let opened = OpenedElf {
+            summary: tree::summary(&elf),
+            roots: tree::roots(&elf),
+            tasks,
+            parse_ms: started.elapsed().as_millis() as u64,
+            catalog: tuning.as_ref().map(|t| t.1.clone()),
+            catalog_error,
+        };
+        self.session.set_tuning(tuning.clone());
+        *self.elf.0.lock().expect("elf state poisoned") = Some(Loaded {
+            elf,
+            tuning,
+            probes: Arc::new(probes),
+            stats,
+        });
+        Ok(opened)
+    }
+
+    pub fn symbol_children(
+        &self,
+        node: &NodeRef,
+        limit: Option<usize>,
+    ) -> Result<Children, String> {
+        let elf = self.elf.current()?;
+        tree::children(&elf, node, limit).map_err(|e| e.to_string())
+    }
 }
 
 /// Decode the tuning table from the file alone: its cells are initialised
@@ -132,18 +133,7 @@ fn read_catalog(elf: &ElfInfo) -> Result<Option<(TableLayout, Catalog)>, String>
     Ok(Some((layout, catalog)))
 }
 
-#[tauri::command]
-pub fn symbol_children(
-    node: NodeRef,
-    limit: Option<usize>,
-    state: State<'_, LoadedElf>,
-) -> Result<Children, String> {
-    let elf = state.current()?;
-    tree::children(&elf, &node, limit).map_err(|e| e.to_string())
-}
-
 /// ELF to open at startup, from `TUNING_TOOLS_ELF` (development convenience).
-#[tauri::command]
 pub fn startup_elf_path() -> Option<String> {
     std::env::var("TUNING_TOOLS_ELF")
         .ok()

@@ -1,11 +1,30 @@
 import { mockHost } from "./mock";
 import { tauriHost } from "./tauri";
 import type { Host } from "./types";
+import { createVsCodeHost, inVsCode } from "./vscode";
 
-export type { Host, HostStartup, SessionHandlers, WatchSeed } from "./types";
+export type {
+  ConnectDefaults,
+  Host,
+  HostNotice,
+  HostSources,
+  HostStartup,
+  HostStatus,
+  SessionHandlers,
+  SourceState,
+  WatchSeed,
+} from "./types";
 
-/** `?host=mock` forces the simulation; a plain browser tab gets it too, as it has no backend */
+/**
+ * A VS Code webview gets the extension; `?host=mock` forces the simulation, and a plain browser
+ * tab gets it too, as it has no backend.
+ */
 function pick(): Host {
+  if (inVsCode()) {
+    // The CSS maps its tokens to the editor theme under this attribute
+    document.documentElement.dataset.host = "vscode";
+    return createVsCodeHost();
+  }
   const asked = new URLSearchParams(location.search).get("host");
   if (asked === "mock" || !("__TAURI_INTERNALS__" in window)) return mockHost;
   return tauriHost;

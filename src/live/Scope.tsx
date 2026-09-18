@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
+import { host } from "../host";
 import { Segmented, button, ghostButton } from "../ui";
 import { formatTicks } from "./format";
 import { Legend, LegendActions } from "./Legend";
@@ -21,7 +22,7 @@ interface Settings {
 function loadSettings(): Settings {
   const fallback: Settings = { windowSec: 10, layout: "lanes" };
   try {
-    return { ...fallback, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") };
+    return { ...fallback, ...JSON.parse(host.storage.get(SETTINGS_KEY) ?? "{}") };
   } catch {
     return fallback;
   }
@@ -89,7 +90,7 @@ export function Scope({ watches, connected, halted, onToggleSide, ...actions }: 
     const next = { ...settings, ...patch };
     setSettings(next);
     try {
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+      host.storage.set(SETTINGS_KEY, JSON.stringify(next));
     } catch {
       // Not remembered next launch; nothing else depends on it
     }

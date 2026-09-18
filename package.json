@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:webview": "tsc && vite build --mode webview",
     "preview": "vite preview",
     "tauri": "tauri"
   },

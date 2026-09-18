@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { OpenedElf, SymbolNode, refForPath } from "./elf/api";
 import { SymbolTree } from "./elf/SymbolTree";
 import { NodeDetails } from "./elf/NodeDetails";
-import { HostStartup, WatchSeed, host } from "./host";
+import { ConnectDefaults, HostStartup, WatchSeed, host } from "./host";
 import type { ConnectRequest } from "./live/api";
 import { ConnectBar } from "./live/ConnectBar";
 import { LogFilter, LogTools, LogView, defaultLogFilter } from "./live/LogConsole";
@@ -22,7 +22,7 @@ function fileName(path: string) {
 }
 
 function loadDock(): number {
-  const stored = Number(localStorage.getItem(DOCK_KEY));
+  const stored = Number(host.storage.get(DOCK_KEY));
   return Number.isFinite(stored) && stored >= DOCK_MIN ? stored : 220;
 }
 
@@ -65,6 +65,7 @@ export default function App() {
   const [dock, setDock] = useState(loadDock);
   const [logFilter, setLogFilter] = useState<LogFilter>(defaultLogFilter);
   const [preset, setPreset] = useState<ConnectRequest | null>(null);
+  const [connectDefaults, setConnectDefaults] = useState<ConnectDefaults | null>(null);
   const startup = useRef<HostStartup | null>(null);
   const session = useSession();
   // A framed link lists its own values, so it works without an ELF
@@ -115,6 +116,7 @@ export default function App() {
     host.startup().then(async (s) => {
       if (stale) return;
       startup.current = s;
+      setConnectDefaults(s.connectDefaults);
       if (!s.elfPath) return;
       const opened = await loadElf(s.elfPath);
       if (opened && s.connect && !stale) {
@@ -167,7 +169,7 @@ export default function App() {
     const next = Math.max(DOCK_MIN, Math.min(height, window.innerHeight - 220));
     setDock(next);
     try {
-      localStorage.setItem(DOCK_KEY, String(Math.round(next)));
+      host.storage.set(DOCK_KEY, String(Math.round(next)));
     } catch {
       // Not remembered next launch
     }
@@ -202,6 +204,7 @@ export default function App() {
           link={session.link}
           canConnect={elf !== null}
           preset={preset}
+          defaults={connectDefaults}
           onConnect={(request) => void session.connect(request)}
           onDisconnect={() => void session.disconnect()}
         />

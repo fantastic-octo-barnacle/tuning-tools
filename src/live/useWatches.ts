@@ -32,7 +32,7 @@ const storageKey = (elfPath: string) => `watches:${elfPath}`;
 
 function load(elfPath: string): Stored[] {
   try {
-    const stored: Stored[] = JSON.parse(localStorage.getItem(storageKey(elfPath)) ?? "[]");
+    const stored: Stored[] = JSON.parse(host.storage.get(storageKey(elfPath)) ?? "[]");
     return stored.map((s) => ({ ...s, ref: s.ref ?? null, cell: s.cell ?? null, unit: s.unit ?? null }));
   } catch {
     return [];
@@ -105,7 +105,7 @@ export function useWatches(owner: string | null, elf: OpenedElf | null) {
       unit,
     }));
     try {
-      localStorage.setItem(storageKey(elfPath), JSON.stringify(stored));
+      host.storage.set(storageKey(elfPath), JSON.stringify(stored));
     } catch {
       // Storage full or unavailable: the list still works for this run
     }

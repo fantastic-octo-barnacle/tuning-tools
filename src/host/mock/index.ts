@@ -3,6 +3,7 @@
 
 import type { NodeRef } from "../../elf/api";
 import type { ConnectRequest, LogLine, SessionEvent, TaskSnapshot, WatchTarget } from "../../live/api";
+import { STANDALONE_STATUS, fixedStatus, localStorageBacked } from "../common";
 import type { Host, SessionHandlers } from "../types";
 import { MODES, catalogEntries, flaky, noise, resetSim, sim, step, tasks, tunables, yawTarget } from "./firmware";
 import { MOCK_ELF_PATH, childrenOf, leavesOf, mockElf, nodeAt, readerFor } from "./elf";
@@ -178,10 +179,13 @@ const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export const mockHost: Host = {
   name: "mock",
+  storage: localStorageBacked,
+  watchStatus: fixedStatus(STANDALONE_STATUS),
   async startup() {
     return {
       elfPath: MOCK_ELF_PATH,
       connect: { carrier: "probe", probe: null, chip: "STM32H723VGTx", speedKhz: 10000, port: null, rateHz: 1000 },
+      connectDefaults: null,
       watches: [
         { path: "gimbal::GIMBAL.yaw.target", unit: "rad" },
         { path: "gimbal::GIMBAL.yaw.angle", unit: "rad" },

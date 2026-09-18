@@ -1,0 +1,13 @@
+[package]
+name = "studio-app"
+version = "0.1.0"
+description = "The studio backend as plain methods: ELF browsing, session control, tuning"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+studio-carriers = { path = "../studio-carriers" }
+studio-core = { path = "../studio-core" }
+studio-dwarf = { path = "../studio-dwarf" }

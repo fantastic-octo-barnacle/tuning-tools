@@ -1,6 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/studio-dwarf", "crates/studio-carriers", "crates/studio-core", "src-tauri"]
+members = [
+  "crates/studio-dwarf",
+  "crates/studio-carriers",
+  "crates/studio-core",
+  "crates/studio-app",
+  "crates/studio-server",
+  "src-tauri",
+]
 # Standalone firmware projects used to (re)build Rust ELF fixtures.
 exclude = [
   "crates/studio-dwarf/tests/fixtures/rust_embedded",

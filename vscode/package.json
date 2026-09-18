@@ -1,0 +1,60 @@
+{
+  "name": "tuning-studio",
+  "displayName": "Tuning Studio",
+  "description": "Live variable watch, tune and telemetry for RoboMaster firmware, over a debug probe or USB",
+  "version": "0.1.0",
+  "publisher": "hxyulin",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Debuggers",
+    "Visualization"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onDebugResolve:probe-rs-debug",
+    "onWebviewPanel:tuningStudio"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "tuningStudio.open",
+        "title": "Open",
+        "category": "Tuning Studio"
+      }
+    ],
+    "configuration": {
+      "title": "Tuning Studio",
+      "properties": {
+        "tuningStudio.serverPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "Path to the `studio-server` binary. Empty uses the one bundled with the extension, else the newest `target/{release,debug}/studio-server` in the workspace or next to the extension."
+        },
+        "tuningStudio.mockTarget": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Connect the Probe source to an in-memory target holding the ELF's initialised data, instead of real hardware (runs `studio-server --mock`)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit -p .",
+    "webview": "npm --prefix .. run build:webview",
+    "smoke": "node esbuild.mjs && node dist/smoke.js",
+    "harness": "node esbuild.mjs && node dist/harness.js"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/vscode": "~1.90.0",
+    "esbuild": "^0.25.0",
+    "typescript": "~5.9.0"
+  }
+}

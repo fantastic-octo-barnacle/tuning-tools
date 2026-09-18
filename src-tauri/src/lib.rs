@@ -1,5 +1,6 @@
-mod elf;
-mod session;
+mod commands;
+
+use std::sync::Arc;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -7,25 +8,24 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(elf::LoadedElf::default())
-        .manage(session::SessionState::default())
+        .manage::<commands::App>(Arc::new(studio_app::StudioApp::new()))
         .invoke_handler(tauri::generate_handler![
-            elf::open_elf,
-            elf::symbol_children,
-            elf::startup_elf_path,
-            session::list_probes,
-            session::search_chips,
-            session::session_connect,
-            session::session_disconnect,
-            session::session_set_watches,
-            session::session_set_rate,
-            session::session_request,
-            session::session_discard,
-            session::session_save,
-            session::list_serial_ports,
-            session::watchable_leaves,
-            session::session_task_states,
-            session::session_read_values,
+            commands::open_elf,
+            commands::symbol_children,
+            commands::startup_elf_path,
+            commands::list_probes,
+            commands::search_chips,
+            commands::session_connect,
+            commands::session_disconnect,
+            commands::session_set_watches,
+            commands::session_set_rate,
+            commands::session_request,
+            commands::session_discard,
+            commands::session_save,
+            commands::list_serial_ports,
+            commands::watchable_leaves,
+            commands::session_task_states,
+            commands::session_read_values,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -2,6 +2,7 @@ import { Channel } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import * as elf from "../elf/api";
 import * as live from "../live/api";
+import { STANDALONE_STATUS, fixedStatus, localStorageBacked } from "./common";
 import type { Host } from "./types";
 
 /** Typed-array views need the frame to start at an 8-byte boundary */
@@ -16,9 +17,11 @@ function toAlignedBuffer(message: ArrayBuffer | Uint8Array | number[]): ArrayBuf
 /** The desktop app: Tauri commands, and channels for the session's streams. */
 export const tauriHost: Host = {
   name: "tauri",
+  storage: localStorageBacked,
   async startup() {
-    return { elfPath: await elf.startupElfPath(), connect: null, watches: [] };
+    return { elfPath: await elf.startupElfPath(), connect: null, connectDefaults: null, watches: [] };
   },
+  watchStatus: fixedStatus(STANDALONE_STATUS),
   async pickElf() {
     const path = await open({ title: "Open firmware ELF", multiple: false, directory: false });
     return typeof path === "string" ? path : null;

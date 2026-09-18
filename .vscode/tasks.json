@@ -1,0 +1,29 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "studio-server",
+      "type": "shell",
+      "command": "cargo build -p studio-server",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "webview",
+      "type": "shell",
+      "command": "npm run build:webview",
+      "problemMatcher": ["$tsc"]
+    },
+    {
+      "label": "extension",
+      "type": "shell",
+      "command": "npm --prefix vscode run build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Tuning Studio: build extension",
+      "dependsOn": ["studio-server", "webview", "extension"],
+      "dependsOrder": "parallel",
+      "problemMatcher": []
+    }
+  ]
+}

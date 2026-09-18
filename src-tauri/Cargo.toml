@@ -25,6 +25,7 @@ serde_json = { workspace = true }
 studio-dwarf = { path = "../crates/studio-dwarf" }
 studio-carriers = { path = "../crates/studio-carriers" }
 studio-core = { path = "../crates/studio-core" }
+studio-app = { path = "../crates/studio-app" }
 tauri-plugin-dialog = "2"
 
 

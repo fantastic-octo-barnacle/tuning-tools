@@ -8,3 +8,10 @@ target
 .idea
 .vscode/*
 !.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
+
+# VS Code extension build output: the webview page and a bundled studio-server
+vscode/media
+vscode/bin
+*.vsix

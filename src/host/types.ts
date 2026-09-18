@@ -32,7 +32,48 @@ export interface HostStartup {
   elfPath: string | null;
   /** A session to start at once, after the ELF opens */
   connect: ConnectRequest | null;
+  /** Connection settings to offer, not connect with, when none are remembered (a launch configuration's chip) */
+  connectDefaults: ConnectDefaults | null;
   watches: WatchSeed[];
+}
+
+export type ConnectDefaults = Partial<Pick<ConnectRequest, "chip" | "probe" | "speedKhz">>;
+
+/** Whether one way of reaching the target can be used now */
+export interface SourceState {
+  available: boolean;
+  /** Why not; shown on the disabled control */
+  reason: string | null;
+}
+
+/** The ways to reach the target, as the ConnectBar offers them */
+export interface HostSources {
+  /** Taking the debug probe for this app alone */
+  probe: SourceState;
+  /** The robot's USB serial link */
+  serial: SourceState;
+  /** Sharing the probe with a running debug session */
+  debugger: SourceState;
+}
+
+/** Something the host did to the session, or offers to do */
+export interface HostNotice {
+  /** New notices have new ids, so one dismissed stays dismissed */
+  id: number;
+  message: string;
+  /** Offer to connect again with the current settings */
+  reconnect: boolean;
+}
+
+export interface HostStatus {
+  sources: HostSources;
+  notice: HostNotice | null;
+}
+
+/** Small UI state kept across launches: connection and scope settings, watch lists */
+export interface HostStorage {
+  get(key: string): string | null;
+  set(key: string, value: string): void;
 }
 
 /**
@@ -40,8 +81,11 @@ export interface HostStartup {
  * can sit on Tauri commands, webview messages, or a simulation.
  */
 export interface Host {
-  readonly name: "tauri" | "mock";
+  readonly name: "tauri" | "mock" | "vscode";
+  readonly storage: HostStorage;
   startup(): Promise<HostStartup>;
+  /** Calls `listener` with the current status at once, then on every change; returns an unsubscribe */
+  watchStatus(listener: (status: HostStatus) => void): () => void;
   /** Ask the person for an ELF; null when they cancel */
   pickElf(): Promise<string | null>;
   openElf(path: string): Promise<OpenedElf>;

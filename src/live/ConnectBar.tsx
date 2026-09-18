@@ -1,5 +1,5 @@
 import { useEffect, useId, useState } from "react";
-import { host } from "../host";
+import { ConnectDefaults, HostStatus, host } from "../host";
 import { Segmented, button, field, primaryButton } from "../ui";
 import type * as api from "./api";
 import { Link } from "./useSession";
@@ -21,11 +21,21 @@ interface Settings {
 function loadSettings(): Settings {
   const fallback: Settings = { carrier: "probe", port: "", probe: "", chip: "", rateHz: 100, speedKhz: 4000 };
   try {
-    return { ...fallback, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") };
+    return { ...fallback, ...JSON.parse(host.storage.get(SETTINGS_KEY) ?? "{}") };
   } catch {
     return fallback;
   }
 }
+
+/** The host's sources and notice, kept current */
+function useHostStatus(): HostStatus {
+  const [status, setStatus] = useState<HostStatus | null>(null);
+  useEffect(() => host.watchStatus(setStatus), []);
+  // watchStatus calls back at once, so this fallback only covers the first render
+  return status ?? { sources: { probe: AVAILABLE, serial: AVAILABLE, debugger: { available: false, reason: null } }, notice: null };
+}
+
+const AVAILABLE = { available: true, reason: null };
 
 interface Props {
   link: Link;
@@ -35,10 +45,14 @@ interface Props {
   onDisconnect: () => void;
   /** Settings the host's launch configuration chose; shown without being remembered */
   preset: api.ConnectRequest | null;
+  /** Settings the host suggests, used where none are remembered */
+  defaults: ConnectDefaults | null;
 }
 
-export function ConnectBar({ link, canConnect, onConnect, onDisconnect, preset }: Props) {
+export function ConnectBar({ link, canConnect, onConnect, onDisconnect, preset, defaults }: Props) {
   const [settings, setSettings] = useState(loadSettings);
+  const { sources, notice } = useHostStatus();
+  const [dismissed, setDismissed] = useState<number | null>(null);
   const [probes, setProbes] = useState<api.ProbeInfo[] | null>(null);
   const [chips, setChips] = useState<string[]>([]);
   const [ports, setPorts] = useState<api.PortInfo[] | null>(null);
@@ -49,7 +63,7 @@ export function ConnectBar({ link, canConnect, onConnect, onDisconnect, preset }
     const next = { ...settings, ...patch };
     setSettings(next);
     try {
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+      host.storage.set(SETTINGS_KEY, JSON.stringify(next));
     } catch {
       // Not remembered next launch; nothing else depends on it
     }
@@ -66,6 +80,17 @@ export function ConnectBar({ link, canConnect, onConnect, onDisconnect, preset }
       port: preset.port ?? s.port,
     }));
   }, [preset]);
+
+  useEffect(() => {
+    if (!defaults) return;
+    const remembered = host.storage.get(SETTINGS_KEY) !== null;
+    setSettings((s) => ({
+      ...s,
+      chip: s.chip || defaults.chip || "",
+      probe: s.probe || defaults.probe || "",
+      speedKhz: remembered ? s.speedKhz : (defaults.speedKhz ?? s.speedKhz),
+    }));
+  }, [defaults]);
 
   const refreshProbes = () => {
     setProbes(null);
@@ -89,18 +114,20 @@ export function ConnectBar({ link, canConnect, onConnect, onDisconnect, preset }
     };
   }, [settings.chip]);
 
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (active) onDisconnect();
-    else
-      onConnect({
+  const connect = () =>
+    onConnect({
         carrier: settings.carrier,
         probe: settings.probe || null,
         chip: settings.chip.trim(),
         speedKhz: settings.speedKhz,
         port: port || null,
-        rateHz: settings.rateHz,
-      });
+      rateHz: settings.rateHz,
+    });
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (active) onDisconnect();
+    else connect();
   };
 
   const serial = settings.carrier === "serial";
@@ -108,31 +135,67 @@ export function ConnectBar({ link, canConnect, onConnect, onDisconnect, preset }
   // Fall back to the first firmware port when the remembered one is gone
   const portMissing = settings.port && ports && !ports.some((p) => p.path === settings.port);
   const port = settings.port || ports?.find((p) => p.telemetry)?.path || "";
-  const blocked = serial
-    ? !port
-      ? "Plug in the robot's USB cable, then rescan"
-      : null
-    : !canConnect
-      ? "Open the firmware ELF first"
-      : !settings.chip.trim()
-        ? "Enter the target chip"
-        : null;
+  const source = sources[settings.carrier];
+  const blocked = !source.available
+    ? (source.reason ?? "Not available here")
+    : serial
+      ? !port
+        ? "Plug in the robot's USB cable, then rescan"
+        : null
+      : !canConnect
+        ? "Open the firmware ELF first"
+        : !settings.chip.trim()
+          ? "Enter the target chip"
+          : null;
+  const shownNotice = notice && notice.id !== dismissed ? notice : null;
 
   return (
     <form onSubmit={submit} className="ml-auto flex flex-wrap items-center gap-1.5">
+      {shownNotice && (
+        <span role="status" className="flex items-center gap-1.5 rounded-sm border border-rule bg-sunken px-2 py-px">
+          <span className="text-muted">{shownNotice.message}</span>
+          {shownNotice.reconnect && !active && (
+            <button
+              type="button"
+              disabled={blocked !== null}
+              title={blocked ?? undefined}
+              onClick={() => {
+                setDismissed(shownNotice.id);
+                connect();
+              }}
+              className={button}
+            >
+              Reconnect
+            </button>
+          )}
+          <button type="button" onClick={() => setDismissed(shownNotice.id)} title="Dismiss" aria-label="Dismiss" className="text-muted hover:text-ink">
+            ×
+          </button>
+        </span>
+      )}
       <Segmented<api.Carrier | "debugger">
         label="Connect through"
         value={settings.carrier}
         disabled={active}
         onChange={(carrier) => carrier !== "debugger" && update({ carrier })}
         options={[
-          { value: "probe", label: "Probe", title: "Take the debug probe for this app alone; needs the ELF" },
-          { value: "serial", label: "USB", title: "The robot's USB cable; no probe or ELF needed" },
+          {
+            value: "probe",
+            label: "Probe",
+            // Still selectable when blocked, so the Connect button can say why
+            title: sources.probe.reason ?? "Take the debug probe for this app alone; needs the ELF",
+          },
+          {
+            value: "serial",
+            label: "USB",
+            disabled: !sources.serial.available,
+            title: sources.serial.reason ?? "The robot's USB cable; no probe or ELF needed",
+          },
           {
             value: "debugger",
             label: "Debug session",
-            disabled: true,
-            title: "Share the probe with a running probe-rs debug session; only inside VS Code",
+            disabled: !sources.debugger.available,
+            title: sources.debugger.reason ?? "Share the probe with a running probe-rs debug session",
           },
         ]}
       />
