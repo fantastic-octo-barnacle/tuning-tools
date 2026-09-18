@@ -28,6 +28,20 @@ pub struct ProbeInfo {
     pub serial: Option<String>,
 }
 
+/// Call once from the main thread before any probe is listed or opened.
+///
+/// On macOS hidapi's first init schedules its global HID manager on the calling
+/// thread's run loop, and every later enumeration schedules each matched device on
+/// that same run loop. Done first on a worker thread, the run loop dies with the
+/// thread and the next probe open crashes in `CFRunLoopAddSource`; the main
+/// thread's run loop lives as long as the app.
+pub fn init_hid_on_main_thread() {
+    #[cfg(target_os = "macos")]
+    if let Err(e) = hidapi::HidApi::new() {
+        tracing::warn!("hidapi init failed; CMSIS-DAP v1 probes unavailable: {e}");
+    }
+}
+
 pub fn list_probes() -> Vec<ProbeInfo> {
     Lister::new()
         .list_all()
