@@ -107,11 +107,11 @@ fn call(
 
 const RTT_BLOCK: u64 = 0x3100_0000;
 
-/// Answers frames on the mock's RTT control channel as the firmware would,
-/// refusing WRITEs for `refused_id`; returns every request it saw.
+/// Answers frames on the mock's RTT control channel with the status `answer`
+/// gives each command and payload; returns every request it saw.
 fn fake_firmware(
     mock: &MockLink,
-    refused_id: u32,
+    answer: impl Fn(u8, &[u8]) -> u8 + Send + 'static,
     stop: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<Vec<(u8, Vec<u8>)>> {
     let mock = mock.clone();
@@ -124,8 +124,7 @@ fn fake_firmware(
             let mut frames = Vec::new();
             decoder.feed(&mock.take_down(0), |f| frames.push(f));
             for f in frames {
-                let refused = f.cmd == cmd::WRITE && f.payload[4..8] == refused_id.to_le_bytes();
-                let status = if refused { 5 } else { 0 };
+                let status = answer(f.cmd, &f.payload);
                 mock.push_up(1, &wire::encode(f.cmd | wire::REPLY, f.seq, &[status]));
                 seen.push((f.cmd, f.payload));
             }
@@ -221,7 +220,16 @@ fn a_firmware_with_rtt_control_channels_gets_framed_requests_and_can_save() {
         &[("control", 256)],
     );
     let stop = Arc::new(AtomicBool::new(false));
-    let firmware = fake_firmware(&mock, other.id, stop.clone());
+    let refused = other.id.to_le_bytes();
+    let answer = move |code, payload: &[u8]| {
+        let refused = code == cmd::WRITE && payload[4..8] == refused;
+        if refused {
+            5
+        } else {
+            0
+        }
+    };
+    let firmware = fake_firmware(&mock, answer, stop.clone());
     let (session, _sink) = start_with(&mock, layout, catalog, Some(RTT_BLOCK));
 
     request(&session, kp.id, 55.5).unwrap();
@@ -247,6 +255,33 @@ fn a_firmware_with_rtt_control_channels_gets_framed_requests_and_can_save() {
         let (_, payload) = seen.iter().find(|(c, _)| *c == code).unwrap();
         assert_eq!(&payload[..], token);
     }
+}
+
+#[test]
+fn a_request_behind_a_refused_lease_says_another_tool_holds_it() {
+    let (layout, catalog, mock) = fixture();
+    let kp = catalog.entries[0].clone();
+    mock.init_rtt_channels(
+        RTT_BLOCK,
+        &[("defmt", 256), ("telemetry", 256)],
+        &[("control", 256)],
+    );
+    let stop = Arc::new(AtomicBool::new(false));
+    // Another tool holds the lease: LEASE is refused and WRITE finds no lease
+    let answer = |code, _: &[u8]| if code == cmd::LEASE { 9 } else { 8 };
+    let firmware = fake_firmware(&mock, answer, stop.clone());
+    let (session, _sink) = start_with(&mock, layout, catalog, Some(RTT_BLOCK));
+
+    let err = request(&session, kp.id, 55.5).unwrap_err();
+    assert!(err.contains("another tool holds"), "{err}");
+    // Asked again with the next request
+    let _ = request(&session, kp.id, 55.5);
+    drop(session);
+    stop.store(true, Ordering::Relaxed);
+    let seen = firmware.join().unwrap();
+    let leases = seen.iter().filter(|(c, _)| *c == cmd::LEASE).count();
+    assert_eq!(leases, 2, "{seen:?}");
+    assert!(seen.iter().all(|(c, _)| *c != cmd::RELEASE), "{seen:?}");
 }
 
 #[test]

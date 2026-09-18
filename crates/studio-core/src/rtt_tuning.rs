@@ -41,6 +41,8 @@ pub struct RttTuning {
     token: u32,
     /// When the lease was last asked for; `None` until the first request
     leased_at: Option<Instant>,
+    /// Why the last LEASE was refused, to explain the requests sent behind it
+    lease_refused: Option<String>,
     pending: HashMap<u16, Pending>,
     buf: Vec<u8>,
 }
@@ -54,6 +56,7 @@ impl RttTuning {
             seq: 0,
             token: session_token(),
             leased_at: None,
+            lease_refused: None,
             pending: HashMap::new(),
             buf: vec![0; 1024],
         }
@@ -121,15 +124,20 @@ impl RttTuning {
                         continue;
                     };
                     let status = f.payload.first().copied().unwrap_or(1);
-                    if status == STATUS_LEASE_LOST
-                        || (f.cmd == cmd::LEASE | wire::REPLY && status != 0)
-                    {
+                    let message = wire::status_message(status).to_string();
+                    let lease_reply = f.cmd == cmd::LEASE | wire::REPLY;
+                    if lease_reply {
+                        self.lease_refused = (status != 0).then(|| message.clone());
+                    }
+                    if status == STATUS_LEASE_LOST || (lease_reply && status != 0) {
                         // The firmware reset or another tool took over: ask again next time
                         self.leased_at = None;
                     }
                     let result = match status {
                         0 => Ok(()),
-                        s => Err(wire::status_message(s).to_string()),
+                        // Sent behind a refused LEASE, so the refusal is the reason
+                        STATUS_LEASE_LOST => Err(self.lease_refused.clone().unwrap_or(message)),
+                        _ => Err(message),
                     };
                     match pending.reply {
                         Some(reply) => {
