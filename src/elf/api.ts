@@ -35,6 +35,8 @@ export interface SymbolNode {
   address: number;
   size: number | null;
   typeName: string;
+  /** Outermost type when the node shows through wrappers, e.g. `Atomic<u32>` */
+  wrapper: string | null;
   kind: NodeKind;
   scalar: Scalar | null;
   expandable: boolean;
@@ -50,6 +52,8 @@ export interface RootNode extends SymbolNode {
   segments: string[];
   section: string;
   readOnly: boolean;
+  /** Runtime plumbing: task pools, RTT buffers, embassy and defmt state */
+  internal: boolean;
 }
 
 export interface Children {

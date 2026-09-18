@@ -54,6 +54,7 @@ interface Props {
 export function SymbolTree({ roots, selected, onSelect, onWatch, watched }: Props) {
   const [filter, setFilter] = useState("");
   const [hideReadOnly, setHideReadOnly] = useState(true);
+  const [hideInternal, setHideInternal] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [children, setChildren] = useState<Map<string, ChildState>>(new Map());
   const listRef = useRef<HTMLDivElement>(null);
@@ -68,9 +69,12 @@ export function SymbolTree({ roots, selected, onSelect, onWatch, watched }: Prop
   const visibleRoots = useMemo(
     () =>
       roots.filter(
-        (r) => (!hideReadOnly || !r.readOnly) && (!needle || r.path.toLowerCase().includes(needle)),
+        (r) =>
+          (!hideReadOnly || !r.readOnly) &&
+          (!hideInternal || !r.internal) &&
+          (!needle || r.path.toLowerCase().includes(needle)),
       ),
-    [roots, hideReadOnly, needle],
+    [roots, hideReadOnly, hideInternal, needle],
   );
   const tree = useMemo(() => buildNamespaces(visibleRoots), [visibleRoots]);
 
@@ -176,6 +180,18 @@ export function SymbolTree({ roots, selected, onSelect, onWatch, watched }: Prop
           />
           RAM only
         </label>
+        <label
+          title="Hide task pools, RTT buffers, and embassy and defmt state"
+          className="flex shrink-0 items-center gap-1.5 text-muted"
+        >
+          <input
+            type="checkbox"
+            checked={hideInternal}
+            onChange={(e) => setHideInternal(e.currentTarget.checked)}
+            className="accent-[var(--led)]"
+          />
+          App only
+        </label>
       </div>
 
       <div
@@ -187,7 +203,11 @@ export function SymbolTree({ roots, selected, onSelect, onWatch, watched }: Prop
       >
         {rows.length === 0 && (
           <p className="px-4 py-6 text-muted">
-            {needle ? `No symbol path contains “${filter.trim()}”.` : "This ELF has no typed statics."}
+            {needle
+              ? `No symbol path contains “${filter.trim()}”.`
+              : roots.length
+                ? "Every static is hidden by the filters above."
+                : "This ELF has no typed statics."}
           </p>
         )}
         {rows.map((row, i) => {
@@ -247,7 +267,7 @@ export function SymbolTree({ roots, selected, onSelect, onWatch, watched }: Prop
                     {row.node.label}
                   </span>
                   <span
-                    title={row.node.typeName}
+                    title={row.node.wrapper ? `${row.node.typeName} inside ${row.node.wrapper}` : row.node.typeName}
                     className={`ml-auto min-w-0 truncate pl-3 font-mono text-[11px] ${
                       row.node.kind === "scalar" ? "text-scalar" : row.node.kind.endsWith("num") ? "text-enum" : "text-muted"
                     }`}

@@ -62,6 +62,7 @@ export function NodeDetails({ node, roots, onWatch }: Props) {
         </Field>
         <Field name="Size">{node.size === null ? "unknown" : `${size} ${size === 1 ? "byte" : "bytes"}`}</Field>
         <Field name="Type">{node.typeName}</Field>
+        {node.wrapper && <Field name="Wrapped in">{node.wrapper}</Field>}
         <Field name="Kind">{kindText[node.kind]}</Field>
         {node.scalar && <Field name="Read as">{scalarName(node.scalar)}</Field>}
         {node.bitSize !== null && (

@@ -4,6 +4,12 @@
 //! Nodes are addressed by [`NodeRef`] (symbol path plus steps), never by address,
 //! so a reference stays meaningful after a rebuild moves things around.
 //! Pointers are leaves: following them needs target memory.
+//!
+//! Wrappers that only hold one value (`AtomicU32`, `UnsafeCell`, `Cell`,
+//! `MaybeUninit`, embassy's blocking `Mutex`, newtypes) are shown through: a
+//! node has the type of the value inside, and its children are that value's.
+//! A reference therefore names members of the innermost type; one that names a
+//! wrapper's own member still resolves.
 
 use crate::dwarf_parser::DwarfDiagnostics;
 use crate::elf::{ElfInfo, SymbolInfo};
@@ -97,6 +103,8 @@ pub struct SymbolNode {
     pub address: u64,
     pub size: Option<u64>,
     pub type_name: String,
+    /// Outermost type when the node shows through wrappers, e.g. `Atomic<u32>`
+    pub wrapper: Option<String>,
     pub kind: NodeKind,
     /// How to decode the bytes when the node is a single value
     pub scalar: Option<VariableType>,
@@ -122,6 +130,9 @@ pub struct RootNode {
     pub section: String,
     /// Not in an allocated, writable section: flash constants, vtables, defmt strings
     pub read_only: bool,
+    /// Owned by the runtime, not the application: task storage, RTT buffers,
+    /// embassy and defmt state
+    pub internal: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -219,6 +230,7 @@ pub fn roots(elf: &ElfInfo) -> Vec<RootNode> {
             Some(RootNode {
                 segments: split_path(&sym.demangled_name),
                 read_only: !sym.writable,
+                internal: is_internal(&sym.demangled_name, &sym.section, &table.type_name(type_id)),
                 section: sym.section.clone(),
                 node,
             })
@@ -279,7 +291,7 @@ pub fn children(
         n
     };
 
-    let nodes: Vec<SymbolNode> = match table.get(table.get_underlying(at.type_id)) {
+    let nodes: Vec<SymbolNode> = match table.get(table.get_underlying(peel(table, at.type_id))) {
         Some(TypeDef::Struct(s)) | Some(TypeDef::Union(s)) => match &s.variant_part {
             Some(part) => part
                 .discriminant
@@ -356,66 +368,145 @@ fn resolve<'e>(elf: &'e ElfInfo, node: &NodeRef) -> Result<(&'e SymbolInfo, Reso
 
     let mut walked = NodeRef::root(&node.symbol);
     for step in &node.steps {
-        let bad = |reason: &str| TreeError::BadStep {
-            at: walked.to_string(),
-            reason: reason.to_string(),
-        };
-        let def = table.get(table.get_underlying(at.type_id));
-        let (member, discr_value) = match (step, def) {
-            (Step::Member(name), Some(TypeDef::Struct(s) | TypeDef::Union(s))) => (
-                s.members
-                    .iter()
-                    .find(|m| &m.name == name)
-                    .ok_or_else(|| bad(&format!("no member `{name}`")))?,
-                None,
-            ),
-            (Step::Variant(name), Some(TypeDef::Struct(s))) => {
-                let v = s
-                    .variant_part
-                    .as_ref()
-                    .and_then(|p| p.variants.iter().find(|v| &v.member.name == name))
-                    .ok_or_else(|| bad(&format!("no variant `{name}`")))?;
-                (&v.member, v.discr_value)
-            }
-            (Step::Discriminant, Some(TypeDef::Struct(s))) => (
-                s.variant_part
-                    .as_ref()
-                    .and_then(|p| p.discriminant.as_ref())
-                    .ok_or_else(|| bad("not a tagged enum"))?,
-                None,
-            ),
-            (Step::Index(i), Some(TypeDef::Array { element, count })) => {
-                if count.is_some_and(|c| *i >= c) {
-                    return Err(bad(&format!("index {i} out of bounds")));
-                }
-                let elem_size = table.type_size(*element).unwrap_or(0);
-                at = Resolved {
-                    label: format!("[{i}]"),
-                    address: at.address + i * elem_size,
-                    type_id: *element,
-                    bit_offset: None,
-                    bit_size: None,
-                    discr_value: None,
-                };
-                walked = walked.child(step.clone());
-                continue;
-            }
-            _ => return Err(bad("step does not match the type")),
-        };
-        at = Resolved {
-            label: match step {
-                Step::Discriminant => "<discriminant>".to_string(),
-                _ => member.name.clone(),
-            },
-            address: at.address + member.offset,
-            type_id: member.type_id,
-            bit_offset: member.bit_offset,
-            bit_size: member.bit_size,
-            discr_value,
+        // Innermost first: that is what the tree hands out. Outer levels match
+        // references that step through a wrapper's own members.
+        let mut tried = wrapper_chain(table, at.type_id)
+            .into_iter()
+            .rev()
+            .map(|t| enter(table, t, at.address, step));
+        let innermost = tried.next().expect("a chain holds at least the type itself");
+        at = match innermost {
+            Ok(next) => next,
+            Err(reason) => tried.find_map(Result::ok).ok_or_else(|| TreeError::BadStep {
+                at: walked.to_string(),
+                reason,
+            })?,
         };
         walked = walked.child(step.clone());
     }
     Ok((sym, at))
+}
+
+/// Take `step` from a value of type `type_id` at `address`.
+fn enter(table: &TypeTable, type_id: TypeId, address: u64, step: &Step) -> Result<Resolved, String> {
+    let def = table.get(table.get_underlying(type_id));
+    let (member, discr_value) = match (step, def) {
+        (Step::Member(name), Some(TypeDef::Struct(s) | TypeDef::Union(s))) => (
+            s.members
+                .iter()
+                .find(|m| &m.name == name)
+                .ok_or_else(|| format!("no member `{name}`"))?,
+            None,
+        ),
+        (Step::Variant(name), Some(TypeDef::Struct(s))) => {
+            let v = s
+                .variant_part
+                .as_ref()
+                .and_then(|p| p.variants.iter().find(|v| &v.member.name == name))
+                .ok_or_else(|| format!("no variant `{name}`"))?;
+            (&v.member, v.discr_value)
+        }
+        (Step::Discriminant, Some(TypeDef::Struct(s))) => (
+            s.variant_part
+                .as_ref()
+                .and_then(|p| p.discriminant.as_ref())
+                .ok_or("not a tagged enum")?,
+            None,
+        ),
+        (Step::Index(i), Some(TypeDef::Array { element, count })) => {
+            if count.is_some_and(|c| *i >= c) {
+                return Err(format!("index {i} out of bounds"));
+            }
+            let elem_size = table.type_size(*element).unwrap_or(0);
+            return Ok(Resolved {
+                label: format!("[{i}]"),
+                address: address + i * elem_size,
+                type_id: *element,
+                bit_offset: None,
+                bit_size: None,
+                discr_value: None,
+            });
+        }
+        _ => return Err("step does not match the type".to_string()),
+    };
+    Ok(Resolved {
+        label: match step {
+            Step::Discriminant => "<discriminant>".to_string(),
+            _ => member.name.clone(),
+        },
+        address: address + member.offset,
+        type_id: member.type_id,
+        bit_offset: member.bit_offset,
+        bit_size: member.bit_size,
+        discr_value,
+    })
+}
+
+/// Deepest a wrapper chain is followed, against a cyclic type table.
+const MAX_WRAPPERS: usize = 16;
+
+/// The one value a wrapper holds: its only member that is not zero-sized,
+/// filling the whole wrapper. `Atomic<u32>.v`, `Mutex.data` (beside a
+/// zero-sized `raw`), `MaybeUninit.value`. Tagged enums are not wrappers.
+fn held_member(table: &TypeTable, type_id: TypeId) -> Option<&MemberDef> {
+    let (Some(TypeDef::Struct(s)) | Some(TypeDef::Union(s))) = table.get(table.get_underlying(type_id))
+    else {
+        return None;
+    };
+    if s.variant_part.is_some() || !s.base_classes.is_empty() {
+        return None;
+    }
+    let mut held = None;
+    for m in &s.members {
+        match table.type_size(m.type_id) {
+            Some(0) => {}
+            Some(size) if size == s.size && m.offset == 0 && m.bit_size.is_none() && held.is_none() => {
+                held = Some(m)
+            }
+            _ => return None,
+        }
+    }
+    held
+}
+
+/// `type_id`, then each type it wraps, outermost first.
+fn wrapper_chain(table: &TypeTable, type_id: TypeId) -> Vec<TypeId> {
+    let mut chain = vec![type_id];
+    while chain.len() <= MAX_WRAPPERS {
+        match held_member(table, chain[chain.len() - 1]) {
+            Some(m) => chain.push(m.type_id),
+            None => break,
+        }
+    }
+    chain
+}
+
+/// The value inside every wrapper around `type_id`.
+fn peel(table: &TypeTable, type_id: TypeId) -> TypeId {
+    wrapper_chain(table, type_id)
+        .pop()
+        .expect("a chain holds at least the type itself")
+}
+
+/// Crates whose statics are runtime plumbing rather than application state.
+const RUNTIME_CRATES: [&str; 6] = [
+    "embassy_",
+    "defmt",
+    "rtt_target",
+    "cortex_m",
+    "critical_section",
+    "static_cell",
+];
+
+/// Task storage, cells handing out buffers once, RTT, and runtime crates' own
+/// statics. Judged by the outer type name, before wrappers are shown through.
+fn is_internal(path: &str, section: &str, type_name: &str) -> bool {
+    let krate = path.trim_start_matches('<');
+    section == ".rtt"
+        || path == "_SEGGER_RTT"
+        || type_name.starts_with("TaskPoolHolder<")
+        || type_name.starts_with("StaticCell<")
+        || RUNTIME_CRATES.iter().any(|c| krate.starts_with(c))
 }
 
 fn describe(
@@ -423,8 +514,9 @@ fn describe(
     node: NodeRef,
     label: String,
     address: u64,
-    type_id: TypeId,
+    outer: TypeId,
 ) -> SymbolNode {
+    let type_id = peel(table, outer);
     let underlying = table.get(table.get_underlying(type_id));
     let (kind, child_count) = match underlying {
         Some(TypeDef::Primitive(_)) => (NodeKind::Scalar, None),
@@ -451,6 +543,7 @@ fn describe(
         address,
         size: table.type_size(type_id),
         type_name: table.type_name(type_id),
+        wrapper: (type_id != outer).then(|| table.type_name(outer)),
         kind,
         scalar,
         expandable: child_count.is_some_and(|c| c > 0),
@@ -501,10 +594,9 @@ mod tests {
         ElfParser::parse_bytes(RUST_V0_ELF, "rust_v0.elf").unwrap()
     }
 
+    /// `GIMBAL` is `Shared<Gimbal<4>>`, a newtype over `UnsafeCell`
     fn gimbal_value() -> NodeRef {
         NodeRef::root(GIMBAL)
-            .child(Step::Member("__0".into()))
-            .child(Step::Member("value".into()))
     }
 
     fn labels(c: &Children) -> Vec<&str> {
@@ -555,9 +647,6 @@ mod tests {
     fn walk_struct_members_down_to_scalars() {
         let elf = rust();
         let sym_addr = elf.find_symbol(GIMBAL).unwrap().address;
-        let value = children(&elf, &NodeRef::root(GIMBAL), None).unwrap();
-        assert_eq!(labels(&value), ["__0"]);
-
         let fields = children(&elf, &gimbal_value(), None).unwrap();
         let mut sorted = labels(&fields);
         sorted.sort();
@@ -578,7 +667,7 @@ mod tests {
             .child(Step::Member("yaw".into()))
             .child(Step::Member("kp".into()));
         let kp = node(&elf, &kp_ref).unwrap();
-        assert_eq!(kp.path, "rust_fixture::control::GIMBAL.__0.value.yaw.kp");
+        assert_eq!(kp.path, "rust_fixture::control::GIMBAL.yaw.kp");
         assert_eq!(kp.kind, NodeKind::Scalar);
         assert_eq!(kp.scalar, Some(VariableType::F32));
         assert_eq!(kp.address, sym_addr + 28);
@@ -644,8 +733,69 @@ mod tests {
         let err = node(&elf, &gimbal_value().child(Step::Member("roll".into()))).unwrap_err();
         assert_eq!(
             err.to_string(),
-            "cannot step into rust_fixture::control::GIMBAL.__0.value: no member `roll`"
+            "cannot step into rust_fixture::control::GIMBAL: no member `roll`"
         );
+    }
+
+    #[test]
+    fn wrappers_are_shown_through() {
+        let elf = rust();
+        let roots = roots(&elf);
+        let root = |path: &str| roots.iter().find(|r| r.node.path == path).unwrap();
+
+        let frames = root("rust_fixture::telemetry::TX_FRAMES");
+        assert_eq!(frames.node.kind, NodeKind::Scalar);
+        assert_eq!(frames.node.scalar, Some(VariableType::U32));
+        assert_eq!(frames.node.type_name, "u32");
+        assert!(frames.node.wrapper.as_deref().unwrap().contains("Atomic"));
+        assert!(!frames.node.expandable);
+
+        let gimbal = root(GIMBAL);
+        assert_eq!(gimbal.node.type_name, "Gimbal<4>");
+        assert!(gimbal.node.wrapper.as_deref().unwrap().starts_with("Shared<"));
+
+        // A plain struct has no wrapper
+        let yaw = node(&elf, &gimbal_value().child(Step::Member("yaw".into()))).unwrap();
+        assert_eq!(yaw.wrapper, None);
+    }
+
+    #[test]
+    fn references_through_a_wrapper_still_resolve() {
+        let elf = rust();
+        let kp = gimbal_value()
+            .child(Step::Member("yaw".into()))
+            .child(Step::Member("kp".into()));
+        let spelled_out = NodeRef::root(GIMBAL)
+            .child(Step::Member("__0".into()))
+            .child(Step::Member("value".into()))
+            .child(Step::Member("yaw".into()))
+            .child(Step::Member("kp".into()));
+        let short = node(&elf, &kp).unwrap();
+        let long = node(&elf, &spelled_out).unwrap();
+        assert_eq!((long.address, long.scalar), (short.address, short.scalar));
+
+        // Stopping on a wrapper member gives the value inside it
+        let cell = node(&elf, &NodeRef::root(GIMBAL).child(Step::Member("__0".into()))).unwrap();
+        assert_eq!(cell.type_name, "Gimbal<4>");
+    }
+
+    #[test]
+    fn runtime_statics_are_internal() {
+        assert!(is_internal("sentry::led_task::POOL", ".bss", "TaskPoolHolder<104, 8>"));
+        assert!(is_internal("app::CAN3_BUFFERS", ".bss", "StaticCell<bsp::FdCanBuffers>"));
+        assert!(is_internal("_SEGGER_RTT", ".rtt", "MaybeUninit<RttControlBlock>"));
+        assert!(is_internal("hal::rtt::init::_RTT_CHANNEL_BUFFER", ".rtt", "MaybeUninit<[u8; 512]>"));
+        assert!(is_internal("embassy_stm32::dma::STATE", ".bss", "State"));
+        assert!(is_internal(
+            "<embassy_stm32::_generated::peripherals::UART5 as embassy_stm32::usart::SealedInstance>::state::STATE",
+            ".bss",
+            "State"
+        ));
+        assert!(!is_internal("app::transport::DR16_ERRORS", ".bss", "Atomic<u32>"));
+        assert!(!is_internal("app::TELEMETRY", ".bss", "Signal<CriticalSectionRawMutex, Telemetry>"));
+
+        let elf = rust();
+        assert!(roots(&elf).iter().all(|r| !r.internal));
     }
 
     #[test]
