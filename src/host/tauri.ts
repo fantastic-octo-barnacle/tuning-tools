@@ -1,7 +1,10 @@
 import { Channel } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import * as elf from "../elf/api";
 import * as live from "../live/api";
+import * as rec from "../live/recording";
 import { STANDALONE_STATUS, fixedStatus, localStorageBacked } from "./common";
 import type { Host } from "./types";
 
@@ -45,4 +48,44 @@ export const tauriHost: Host = {
   discardValues: live.discardValues,
   taskStates: live.taskStates,
   readValues: live.readValues,
+  recordingStart: rec.recordingStart,
+  recordingStop: rec.recordingStop,
+  exportCsv: rec.exportCsv,
+  streamStart: rec.streamStart,
+  streamStop: rec.streamStop,
+  appState: rec.appState,
+  watchAppEvents(listener) {
+    let stop: (() => void) | null = null;
+    let gone = false;
+    listen<rec.AppEvent>(rec.APP_EVENT, (e) => listener(e.payload)).then((unlisten) => {
+      if (gone) unlisten();
+      else stop = unlisten;
+    });
+    return () => {
+      gone = true;
+      stop?.();
+    };
+  },
+  async pickRecordingPath() {
+    const path = await save({ title: "Record to", filters: [{ name: "MCAP recording", extensions: ["mcap"] }] });
+    return path ?? null;
+  },
+  async pickCsvPath(suggested) {
+    const path = await save({
+      title: "Export CSV",
+      defaultPath: suggested,
+      filters: [{ name: "CSV", extensions: ["csv"] }],
+    });
+    return path ?? null;
+  },
+  async pickRecording() {
+    const path = await open({
+      title: "Export a recording as CSV",
+      multiple: false,
+      directory: false,
+      filters: [{ name: "MCAP recording", extensions: ["mcap"] }],
+    });
+    return typeof path === "string" ? path : null;
+  },
+  reveal: (path) => revealItemInDir(path),
 };

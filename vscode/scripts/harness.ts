@@ -4,7 +4,10 @@
 //   npm run harness
 
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { connect } from "node:net";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { harness, Uri, workspace } from "./fakeVscode";
 import { activate } from "../src/extension";
 
@@ -132,6 +135,58 @@ async function main() {
   await until("frames after reconnect", () => frames(44).length >= 2);
   assert.equal(lastStatus().notice, null, "connecting clears the notice");
   console.log(`session 44: reconnected, ${frames(44).length} frames`);
+
+  // Recording goes to the workspace's .tuning-studio/recordings; a scratch workspace here
+  const scratch = mkdtempSync(join(tmpdir(), "tuning-studio-harness-"));
+  const folders = workspace.workspaceFolders;
+  workspace.workspaceFolders = [{ uri: Uri.file(scratch), name: "scratch", index: 0 }];
+  const appEvents = () => panel.toPage.filter((m: any) => m.type === "app_event").map((m: any) => m.event);
+  const started = await call("recording_start", { path: null });
+  assert.ok(started.path.startsWith(join(scratch, ".tuning-studio", "recordings", "test_arm-")), started.path);
+  await until("recording progress", () =>
+    appEvents().find((e: any) => e.type === "recording" && e.active && e.ticks > 0),
+  );
+
+  const stream = await call("stream_start", { port: 0, bindAll: false });
+  assert.match(stream.address, /^127\.0\.0\.1:\d+$/);
+  const [, port] = stream.address.split(":");
+  const lines: any[] = [];
+  const socket = connect(Number(port), "127.0.0.1");
+  let buffered = "";
+  socket.on("data", (chunk) => {
+    buffered += chunk.toString("utf8");
+    let nl: number;
+    while ((nl = buffered.indexOf("\n")) >= 0) {
+      lines.push(JSON.parse(buffered.slice(0, nl)));
+      buffered = buffered.slice(nl + 1);
+    }
+  });
+  await until("stream samples", () => lines.some((l) => l.type === "samples"));
+  assert.equal(lines[0].type, "hello");
+  assert.equal(lines[0].watches[0].name, "global_counter");
+  await until("a stream client", () => appEvents().find((e: any) => e.type === "stream" && e.clients === 1));
+
+  const stopped = await call("recording_stop");
+  assert.equal(stopped.active, false);
+  assert.ok(stopped.ticks > 0 && stopped.bytes > 0);
+  harness.savePath = join(scratch, "out.csv");
+  const csvPath = await call("pick_csv_path", { suggested: stopped.path.replace(/\.mcap$/, ".csv") });
+  assert.equal(csvPath, harness.savePath);
+  const csv = await call("export_csv", { mcapPath: stopped.path, csvPath });
+  assert.equal(csv.rows, stopped.ticks);
+  assert.equal(readFileSync(csvPath, "utf8").split("\n")[0], "time,global_counter");
+  await call("reveal", { path: csvPath });
+  assert.equal(harness.executed.at(-1)?.name, "revealFileInOS");
+  socket.destroy();
+  const off = await call("stream_stop");
+  assert.equal(off.listening, false);
+  console.log(
+    `recording: ${stopped.ticks} ticks, ${stopped.bytes} bytes; CSV ${csv.rows} rows; ` +
+      `stream: ${lines.filter((l) => l.type === "samples").length} samples messages`,
+  );
+  assert.ok(existsSync(stopped.path));
+  rmSync(scratch, { recursive: true, force: true });
+  workspace.workspaceFolders = folders;
 
   panel.send({ type: "storage", key: "scope", value: '{"windowSec":5}' });
   await sleep(10);

@@ -2,13 +2,14 @@
 //! DWARF parsing, joining a session, waiting on the target) run on a blocking
 //! thread; the rest run inline as before. Samples reach the webview as binary
 //! frames on one channel, status, stats and log lines as JSON on another.
+//! Recording and stream state goes to every window as the `studio-app-event` event.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use studio_app::{
-    ConnectRequest, OpenedElf, SessionEvent, SessionSink, StudioApp, TaskSnapshot, ValueRead,
-    WatchRequest, WatchResult,
+    AppState, ConnectRequest, CsvExport, OpenedElf, RecordingState, SessionEvent, SessionSink,
+    StreamOptions, StreamState, StudioApp, TaskSnapshot, ValueRead, WatchRequest, WatchResult,
 };
 use studio_carriers::probe::ProbeInfo;
 use studio_carriers::serial::PortInfo;
@@ -156,4 +157,54 @@ pub async fn session_read_values(
 ) -> Result<Vec<ValueRead>, String> {
     let app = app.inner().clone();
     blocking(move || app.read_values(&nodes)).await
+}
+
+/// Start recording the session: to `path`, or to a new file in the app's
+/// `recordings` directory.
+#[tauri::command]
+pub async fn recording_start(
+    path: Option<PathBuf>,
+    app: State<'_, App>,
+) -> Result<RecordingState, String> {
+    let app = app.inner().clone();
+    blocking(move || app.start_recording(path, None)).await
+}
+
+#[tauri::command]
+pub async fn recording_stop(app: State<'_, App>) -> Result<RecordingState, String> {
+    let app = app.inner().clone();
+    blocking(move || app.stop_recording()).await
+}
+
+#[tauri::command]
+pub async fn export_csv(
+    mcap_path: PathBuf,
+    csv_path: Option<PathBuf>,
+) -> Result<CsvExport, String> {
+    blocking(move || studio_app::export_csv(&mcap_path, csv_path.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn stream_start(
+    port: Option<u16>,
+    bind_all: Option<bool>,
+    app: State<'_, App>,
+) -> Result<StreamState, String> {
+    let app = app.inner().clone();
+    let options = StreamOptions::new(
+        port.unwrap_or(studio_app::DEFAULT_PORT),
+        bind_all.unwrap_or(false),
+    );
+    blocking(move || app.start_stream(options)).await
+}
+
+#[tauri::command]
+pub async fn stream_stop(app: State<'_, App>) -> Result<StreamState, String> {
+    let app = app.inner().clone();
+    blocking(move || Ok(app.stop_stream())).await
+}
+
+#[tauri::command]
+pub fn app_state(app: State<'_, App>) -> AppState {
+    app.app_state()
 }

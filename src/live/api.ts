@@ -109,8 +109,21 @@ export interface WatchResult {
   error: string | null;
 }
 
-/** A symbol by `node`, or a tuning table value by `cell` id */
-export type WatchTarget = { id: number; node: NodeRef | null; cell: number | null };
+/**
+ * A symbol by `node`, or a tuning table value by `cell` id. The rest names it in recordings and
+ * the stream; the backend fills in what is missing.
+ */
+export type WatchTarget = {
+  id: number;
+  node: NodeRef | null;
+  cell: number | null;
+  /** As the legend shows it, e.g. `GIMBAL.yaw.angle` */
+  name?: string | null;
+  unit?: string | null;
+  /** Symbol path, or the tuning value's name */
+  path?: string | null;
+  typeName?: string | null;
+};
 
 export function setWatches(watches: WatchTarget[]): Promise<WatchResult[]> {
   return invoke("session_set_watches", { watches });

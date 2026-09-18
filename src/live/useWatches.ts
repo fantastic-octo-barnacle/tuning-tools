@@ -41,6 +41,12 @@ function load(elfPath: string): Stored[] {
 
 let nextId = 1;
 
+/** A watch's short name, as the legend shows it: the path after its module */
+export function watchName(path: string): string {
+  const cut = path.lastIndexOf("::");
+  return cut < 0 ? path : path.slice(cut + 2);
+}
+
 function assignTraces(watches: Watch[]): Watch[] {
   const used = new Set(watches.filter((w) => w.plotted && w.trace !== null).map((w) => w.trace));
   return watches.map((w) => {
@@ -76,13 +82,24 @@ export function useWatches(owner: string | null, elf: OpenedElf | null) {
     });
   }, [elfPath]);
 
-  // Push the set to the backend whenever membership changes; plot toggles do not matter to it
+  // Push the set to the backend whenever membership or a unit changes (recordings and the stream
+  // carry units); plot toggles do not matter to it
   const ready = elfPath !== null && state.owner === elfPath;
-  const membership = watches.map((w) => `${w.id}`).join(",");
+  const membership = JSON.stringify(watches.map((w) => [w.id, w.unit]));
   useEffect(() => {
     if (!ready) return;
     host
-      .setWatches(watches.map((w) => ({ id: w.id, node: w.ref, cell: w.cell })))
+      .setWatches(
+        watches.map((w) => ({
+          id: w.id,
+          node: w.ref,
+          cell: w.cell,
+          name: watchName(w.path),
+          unit: w.unit,
+          path: w.path,
+          typeName: w.typeName,
+        })),
+      )
       .then((results) => {
         const errors = new Map(results.map((r) => [r.id, r.error]));
         setWatches((ws) => ws.map((w) => (errors.has(w.id) ? { ...w, error: errors.get(w.id) ?? null } : w)));

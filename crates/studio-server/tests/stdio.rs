@@ -242,3 +242,177 @@ fn mock_session_over_stdio() {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+fn app_event(m: &Message, kind: &str) -> Option<Value> {
+    match m {
+        Message::Json(v) if v["type"] == "app_event" && v["event"]["type"] == kind => {
+            Some(v["event"].clone())
+        }
+        _ => None,
+    }
+}
+
+fn connect_mock(client: &mut Client, session: u32) {
+    client
+        .call("open_elf", json!({ "path": FIXTURE }))
+        .expect("open_elf");
+    let counter = json!({ "symbol": "global_counter", "steps": [] });
+    let sensor = json!({ "symbol": "sensor_data", "steps": [] });
+    client
+        .call(
+            "session_set_watches",
+            json!({ "watches": [
+                { "id": 1, "node": counter, "cell": null, "unit": "count" },
+                { "id": 2, "node": sensor, "cell": null, "name": "sensor" },
+            ]}),
+        )
+        .unwrap();
+    let request = json!({
+        "carrier": "probe", "probe": null, "chip": "STM32F407VG",
+        "speedKhz": null, "port": null, "rateHz": 1000.0,
+    });
+    client
+        .call(
+            "session_connect",
+            json!({ "request": request, "session": session }),
+        )
+        .expect("connect");
+    client.wait("connected", |m| is_status(m, session, "connected"));
+}
+
+#[test]
+fn recording_and_stream_over_stdio() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = Client::spawn();
+    client.wait(
+        "ready",
+        |m| matches!(m, Message::Json(v) if v["type"] == "ready"),
+    );
+    // Not before a session
+    assert!(client
+        .call("recording_start", json!({ "dir": dir.path() }))
+        .unwrap_err()
+        .contains("connect"));
+    connect_mock(&mut client, 3);
+
+    let started = client
+        .call(
+            "recording_start",
+            json!({ "path": null, "dir": dir.path() }),
+        )
+        .unwrap();
+    assert_eq!(started["active"], true);
+    let path = started["path"].as_str().unwrap().to_string();
+    assert!(path.starts_with(dir.path().to_str().unwrap()), "{path}");
+
+    // The stream on a free port, read by a plain TCP client
+    let stream = client
+        .call("stream_start", json!({ "port": 0, "bindAll": false }))
+        .unwrap();
+    assert_eq!(stream["listening"], true);
+    let address = stream["address"].as_str().unwrap().to_string();
+    assert!(address.starts_with("127.0.0.1:"), "{address}");
+    let socket = std::net::TcpStream::connect(&address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut lines = std::io::BufRead::lines(std::io::BufReader::new(socket));
+    let hello: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+    assert_eq!(hello["type"], "hello");
+    assert_eq!(hello["session"]["connected"], true);
+    assert_eq!(hello["watches"][0]["unit"], "count");
+    assert_eq!(hello["watches"][1]["name"], "sensor");
+    let samples: Value = loop {
+        let m: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+        if m["type"] == "samples" {
+            break m;
+        }
+    };
+    assert!(samples["values"]["global_counter"].is_array());
+
+    // Progress arrives while recording
+    let progress = client.wait("recording progress", |m| {
+        app_event(m, "recording")
+            .is_some_and(|e| e["active"] == true && e["ticks"].as_u64() > Some(0))
+    });
+    let progress = app_event(&progress, "recording").unwrap();
+    assert!(progress["bytes"].as_u64().unwrap() > 0);
+    let state = client.call("app_state", Value::Null).unwrap();
+    assert_eq!(state["recording"]["active"], true);
+    assert_eq!(state["stream"]["clients"], 1);
+
+    let stopped = client.call("recording_stop", Value::Null).unwrap();
+    assert_eq!(stopped["active"], false);
+    assert_eq!(stopped["dropped"], 0);
+    let ticks = stopped["ticks"].as_u64().unwrap();
+    assert!(ticks > 500, "{ticks}");
+    assert!(client
+        .call("recording_stop", Value::Null)
+        .unwrap_err()
+        .contains("not recording"));
+
+    let csv = client
+        .call("export_csv", json!({ "mcapPath": path, "csvPath": null }))
+        .unwrap();
+    assert_eq!(csv["rows"].as_u64(), Some(ticks));
+    assert_eq!(csv["truncated"], false);
+    let text = std::fs::read_to_string(csv["path"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        text.lines().next(),
+        Some("time,global_counter [count],sensor")
+    );
+
+    // The stream stays up across a reconnect
+    client.call("session_disconnect", Value::Null).unwrap();
+    connect_mock(&mut client, 4);
+    let mut kinds = Vec::new();
+    loop {
+        let m: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+        kinds.push(m["type"].as_str().unwrap().to_string());
+        if m["type"] == "samples" && kinds.iter().any(|k| k == "status") {
+            break;
+        }
+    }
+    let stopped = client.call("stream_stop", Value::Null).unwrap();
+    assert_eq!(stopped["listening"], false);
+    // The server closed the socket
+    assert!(lines.all(|l| l.is_ok()));
+
+    drop(client.stdin.take());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while client.child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "server did not exit");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_killed_server_leaves_a_readable_recording() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = Client::spawn();
+    connect_mock(&mut client, 1);
+    let path = dir.path().join("killed.mcap");
+    client
+        .call("recording_start", json!({ "path": path }))
+        .unwrap();
+    // Past two periodic flushes
+    let mut last = 0;
+    while last < 2000 {
+        let m = client.wait("recording progress", |m| {
+            app_event(m, "recording").is_some()
+        });
+        last = app_event(&m, "recording").unwrap()["ticks"]
+            .as_u64()
+            .unwrap();
+    }
+    client.child.kill().unwrap();
+    client.child.wait().unwrap();
+
+    let csv = studio_app::export_csv(&path, None).unwrap();
+    println!(
+        "killed after {last} ticks reported: {} rows readable, truncated {}",
+        csv.rows, csv.truncated
+    );
+    assert!(csv.truncated);
+    assert!(csv.rows >= 1500, "{} rows", csv.rows);
+}

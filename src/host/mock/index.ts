@@ -3,7 +3,9 @@
 
 import type { NodeRef } from "../../elf/api";
 import type { ConnectRequest, LogLine, SessionEvent, TaskSnapshot, WatchTarget } from "../../live/api";
-import { STANDALONE_STATUS, fixedStatus, localStorageBacked } from "../common";
+import type { RecordingState } from "../../live/recording";
+import { STREAM_STOPPED } from "../../live/recording";
+import { STANDALONE_STATUS, appEventHub, fixedStatus, localStorageBacked } from "../common";
 import type { Host, SessionHandlers } from "../types";
 import { MODES, catalogEntries, flaky, noise, resetSim, sim, step, tasks, tunables, yawTarget } from "./firmware";
 import { MOCK_ELF_PATH, childrenOf, leavesOf, mockElf, nodeAt, readerFor } from "./elf";
@@ -177,10 +179,37 @@ function stop() {
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+const NOT_HERE = "Not available in the mock host";
+const unavailable = { available: false, reason: NOT_HERE };
+
+/** Recording is simulated: progress events, no file */
+let recording: { state: RecordingState; started: number; timer: ReturnType<typeof setInterval> } | null = null;
+const appEvents = appEventHub();
+
+function recordingTick(active: boolean): RecordingState {
+  const r = recording!;
+  const elapsed = (performance.now() - r.started) / 1000;
+  const ticks = Math.floor(elapsed * (session?.rateHz ?? 0));
+  r.state = { ...r.state, active, elapsed, ticks, bytes: Math.round(ticks * (20 + 14 * watched.length) * 0.4) };
+  appEvents.emit({ type: "recording", ...r.state });
+  return r.state;
+}
+
+function endRecording(): RecordingState | null {
+  if (!recording) return null;
+  clearInterval(recording.timer);
+  const state = recordingTick(false);
+  recording = null;
+  return state;
+}
+
 export const mockHost: Host = {
   name: "mock",
   storage: localStorageBacked,
-  watchStatus: fixedStatus(STANDALONE_STATUS),
+  watchStatus: fixedStatus({
+    ...STANDALONE_STATUS,
+    features: { record: STANDALONE_STATUS.features.record, exportCsv: unavailable, stream: unavailable, reveal: unavailable },
+  }),
   async startup() {
     return {
       elfPath: MOCK_ELF_PATH,
@@ -229,6 +258,8 @@ export const mockHost: Host = {
   },
 
   async connect(request, handlers) {
+    // A new session ends a recording of the old one, as in the real backend
+    endRecording();
     stop();
     if (request.carrier === "probe" && !request.chip) throw new Error("Enter the target chip");
     const now = performance.now();
@@ -268,6 +299,7 @@ export const mockHost: Host = {
   },
   async disconnect() {
     const handlers = session?.handlers;
+    endRecording();
     stop();
     handlers?.event({ type: "status", state: "disconnected", message: null });
   },
@@ -334,5 +366,53 @@ export const mockHost: Host = {
       const read = node && readerFor(node);
       return read ? { value: read(), error: null } : { value: null, error: "Not a number that can be read" };
     });
+  },
+
+  async recordingStart(path) {
+    requireSession("record");
+    if (recording) throw new Error("already recording; stop that recording first");
+    const stamp = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+    const state: RecordingState = {
+      active: true,
+      path: path ?? `/mock/recordings/firmware-${stamp}.mcap`,
+      elapsed: 0,
+      ticks: 0,
+      bytes: 0,
+      dropped: 0,
+      error: null,
+    };
+    recording = { state, started: performance.now(), timer: setInterval(() => recordingTick(true), 1000) };
+    appEvents.emit({ type: "recording", ...state });
+    return state;
+  },
+  async recordingStop() {
+    const state = endRecording();
+    if (!state) throw new Error("not recording");
+    return state;
+  },
+  async exportCsv() {
+    throw new Error(NOT_HERE);
+  },
+  async streamStart() {
+    throw new Error(NOT_HERE);
+  },
+  async streamStop() {
+    return STREAM_STOPPED;
+  },
+  async appState() {
+    return { recording: recording?.state ?? null, stream: STREAM_STOPPED };
+  },
+  watchAppEvents: appEvents.watch,
+  async pickRecordingPath() {
+    return "/mock/recordings/picked.mcap";
+  },
+  async pickCsvPath() {
+    throw new Error(NOT_HERE);
+  },
+  async pickRecording() {
+    throw new Error(NOT_HERE);
+  },
+  async reveal() {
+    throw new Error(NOT_HERE);
   },
 };

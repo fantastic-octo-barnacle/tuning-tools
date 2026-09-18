@@ -1,6 +1,7 @@
 import { OpenedElf } from "../elf/api";
 import { CoreState, Stats } from "./api";
 import { formatMicros, formatRate } from "./format";
+import { StreamControl } from "./StreamControl";
 import { Link } from "./useSession";
 
 const coreText: Record<CoreState, string> = {
@@ -101,6 +102,7 @@ export function StatusBar({ elf, link, stats }: { elf: OpenedElf | null; link: L
           )}
         </>
       )}
+      <StreamControl />
     </footer>
   );
 }

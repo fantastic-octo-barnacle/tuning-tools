@@ -16,6 +16,8 @@ export interface Ready {
 export interface ServerHandlers {
   /** A session's status, stats, log, tune or catalog event */
   event(session: number, event: { type: string; [key: string]: unknown }): void;
+  /** Recording progress and stream state, over every session (studio-app `AppEvent`) */
+  appEvent?(event: { type: string; [key: string]: unknown }): void;
   /** A TTS1 sample frame, copied into a buffer of its own (so 8-byte aligned) */
   frame(session: number, tts1: Uint8Array): void;
   /** The process ended; `expected` when `dispose` asked it to */
@@ -122,6 +124,8 @@ export class StudioServer {
       else call.reject(new ServerError(m.error));
     } else if (m.type === "event") {
       this.handlers.event(m.session, m.event);
+    } else if (m.type === "app_event") {
+      this.handlers.appEvent?.(m.event);
     } else if (m.type === "ready") {
       this.readyWaiter.resolve({ version: m.version, mock: m.mock });
     }

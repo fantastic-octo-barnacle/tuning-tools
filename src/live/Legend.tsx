@@ -3,7 +3,7 @@ import { formatLive, formatTick } from "./format";
 import { samples } from "./samples";
 import { Readout, useReadout } from "./readout";
 import type { Lane } from "./Scope";
-import { MAX_TRACES, Watch } from "./useWatches";
+import { MAX_TRACES, Watch, watchName } from "./useWatches";
 
 /** Values change far faster than people read; repaint at 10 Hz, and on every cursor move */
 const REFRESH_MS = 100;
@@ -100,7 +100,7 @@ interface RowProps extends LegendActions {
 
 function Row({ watch: w, inLane, canPlot, cursor, range, onTogglePlot, onRemove, onSetUnit, writable, onWrite }: RowProps) {
   const cut = w.path.lastIndexOf("::");
-  const name = cut < 0 ? w.path : w.path.slice(cut + 2);
+  const name = watchName(w.path);
   const module = w.cell !== null ? "tuning table" : cut < 0 ? "" : w.path.slice(0, cut);
   const latest = samples.latest(w.id);
   const value = cursor ? cursor.value : latest;

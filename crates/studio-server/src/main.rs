@@ -20,7 +20,9 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
-use studio_app::{ConnectRequest, SessionEvent, SessionSink, StudioApp, WatchRequest};
+use studio_app::{
+    ConnectRequest, SessionEvent, SessionSink, StreamOptions, StudioApp, WatchRequest,
+};
 use studio_carriers::mock::MockLink;
 use studio_carriers::probe::{ProbeConfig, ProbeInfo};
 use studio_carriers::{CarrierError, Link, MemoryAccess};
@@ -123,6 +125,27 @@ enum Call {
     SessionReadValues {
         nodes: Vec<NodeRef>,
     },
+    /// `dir` is where a recording without a `path` goes; the extension passes
+    /// the workspace's `.tuning-studio/recordings`
+    #[serde(rename_all = "camelCase")]
+    RecordingStart {
+        path: Option<PathBuf>,
+        dir: Option<PathBuf>,
+    },
+    RecordingStop {},
+    #[serde(rename_all = "camelCase")]
+    ExportCsv {
+        mcap_path: PathBuf,
+        csv_path: Option<PathBuf>,
+    },
+    #[serde(rename_all = "camelCase")]
+    StreamStart {
+        port: Option<u16>,
+        #[serde(default)]
+        bind_all: bool,
+    },
+    StreamStop {},
+    AppState {},
 }
 
 impl Call {
@@ -136,6 +159,7 @@ impl Call {
                 | Call::SessionSetWatches { .. }
                 | Call::SessionSetRate { .. }
                 | Call::WatchableLeaves { .. }
+                | Call::AppState {}
         )
     }
 }
@@ -183,6 +207,18 @@ impl Server {
             Call::WatchableLeaves { node } => to_value(app.watchable_leaves(&node)),
             Call::SessionTaskStates {} => to_value(app.task_states()),
             Call::SessionReadValues { nodes } => to_value(app.read_values(&nodes)),
+            Call::RecordingStart { path, dir } => to_value(app.start_recording(path, dir)),
+            Call::RecordingStop {} => to_value(app.stop_recording()),
+            Call::ExportCsv {
+                mcap_path,
+                csv_path,
+            } => to_value(studio_app::export_csv(&mcap_path, csv_path.as_deref())),
+            Call::StreamStart { port, bind_all } => to_value(app.start_stream(StreamOptions::new(
+                port.unwrap_or(studio_app::DEFAULT_PORT),
+                bind_all,
+            ))),
+            Call::StreamStop {} => to_value(Ok(app.stop_stream())),
+            Call::AppState {} => to_value(Ok(app.app_state())),
         }
     }
 }
@@ -304,6 +340,10 @@ fn main() {
     } else {
         app
     });
+    let events = out.clone();
+    app.set_event_sink(Arc::new(move |event| {
+        events.json(&json!({ "type": "app_event", "event": event }));
+    }));
     let server = Arc::new(Server {
         app: app.clone(),
         out: out.clone(),
@@ -355,8 +395,10 @@ fn main() {
         }
     }
 
-    // Stdin closed: the extension is gone or wants us gone. Let go of the probe first.
+    // Stdin closed: the extension is gone or wants us gone. Let go of the probe
+    // first; that also closes a recording. Then close the stream's port.
     app.disconnect();
+    app.stop_stream();
     if read_only {
         let refused = REFUSED_WRITES.load(Ordering::Relaxed);
         eprintln!("studio-server: exiting; {refused} writes refused");

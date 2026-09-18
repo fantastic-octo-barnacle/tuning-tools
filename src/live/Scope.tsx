@@ -6,6 +6,7 @@ import { Segmented, button, ghostButton } from "../ui";
 import { formatTicks } from "./format";
 import { Legend, LegendActions } from "./Legend";
 import { Readout, newReadout, notify, useReadout } from "./readout";
+import { RecordButton, RecordNotice, useRecorder } from "./RecordControl";
 import { samples } from "./samples";
 import { Watch } from "./useWatches";
 
@@ -77,6 +78,7 @@ export function Scope({ watches, connected, halted, onToggleSide, ...actions }: 
   const [paused, setPausedState] = useState(false);
   const [theme, setTheme] = useState(0);
   const [readout] = useState<Readout>(newReadout);
+  const recorder = useRecorder();
   // The x window: follows the newest sample while live, holds still (or zooms) while paused
   const view = useRef({ windowSec: settings.windowSec, paused: false, from: 0, to: settings.windowSec, dirty: true });
   const hosts = useRef(new Map<string, HTMLDivElement>());
@@ -273,7 +275,7 @@ export function Scope({ watches, connected, halted, onToggleSide, ...actions }: 
         : { text: "Not connected", dot: "rounded-full bg-faint" };
 
   return (
-    <section aria-label="Scope" className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] bg-surface">
+    <section aria-label="Scope" className="grid min-h-0 grid-rows-[auto_auto_minmax(0,1fr)] bg-surface">
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 border-b border-rule px-3 py-1">
         <button
           onClick={onToggleSide}
@@ -309,6 +311,7 @@ export function Scope({ watches, connected, halted, onToggleSide, ...actions }: 
             ]}
           />
         </span>
+        <RecordButton rec={recorder} connected={connected} />
         <span className="flex-1" />
         <CursorTime readout={readout} />
         <button
@@ -318,6 +321,9 @@ export function Scope({ watches, connected, halted, onToggleSide, ...actions }: 
         >
           {paused ? "Back to live" : "Pause"}
         </button>
+      </div>
+      <div>
+        <RecordNotice rec={recorder} />
       </div>
       <div className="grid min-h-0 grid-cols-[minmax(0,1fr)_290px] max-[900px]:grid-cols-1 max-[900px]:grid-rows-[minmax(0,1fr)_150px]">
         <div

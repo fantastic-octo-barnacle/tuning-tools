@@ -3,7 +3,8 @@
 // the Tauri commands', so the two backends stay one API.
 
 import type { ConnectRequest, SessionEvent } from "../live/api";
-import { STANDALONE_STATUS } from "./common";
+import type { AppEvent } from "../live/recording";
+import { STANDALONE_STATUS, appEventHub } from "./common";
 import type { Host, HostStartup, HostStatus, HostStorage, SessionHandlers } from "./types";
 
 interface VsCodeApi {
@@ -22,7 +23,8 @@ type Incoming =
   | { type: "result"; id: number; ok: false; error: string }
   | { type: "event"; session: number; event: SessionEvent }
   | { type: "frame"; session: number; data: ArrayBuffer | Uint8Array }
-  | { type: "status"; status: HostStatus };
+  | { type: "status"; status: HostStatus }
+  | { type: "app_event"; event: AppEvent };
 
 interface WebviewState {
   storage: Record<string, string>;
@@ -71,6 +73,7 @@ export function createVsCodeHost(): Host {
   let session: { id: number; handlers: SessionHandlers } | null = null;
   let status: HostStatus = STANDALONE_STATUS;
   const listeners = new Set<(s: HostStatus) => void>();
+  const appEvents = appEventHub();
 
   // Webview state survives the panel being hidden; the extension's workspace state survives a restart
   const saved = vscode.getState() as WebviewState | undefined;
@@ -104,6 +107,9 @@ export function createVsCodeHost(): Host {
       case "status":
         status = m.status;
         listeners.forEach((l) => l(status));
+        break;
+      case "app_event":
+        appEvents.emit(m.event);
         break;
     }
   });
@@ -151,5 +157,17 @@ export function createVsCodeHost(): Host {
     discardValues: () => call("session_discard"),
     taskStates: () => call("session_task_states"),
     readValues: (nodes) => call("session_read_values", { nodes }),
+    // The extension adds the workspace's recordings directory
+    recordingStart: (path) => call("recording_start", { path }),
+    recordingStop: () => call("recording_stop"),
+    exportCsv: (mcapPath, csvPath) => call("export_csv", { mcapPath, csvPath }),
+    streamStart: (port, bindAll) => call("stream_start", { port, bindAll }),
+    streamStop: () => call("stream_stop"),
+    appState: () => call("app_state"),
+    watchAppEvents: appEvents.watch,
+    pickRecordingPath: () => call<string | null>("pick_recording_path"),
+    pickCsvPath: (suggested) => call<string | null>("pick_csv_path", { suggested }),
+    pickRecording: () => call<string | null>("pick_recording"),
+    reveal: (path) => call("reveal", { path }),
   };
 }

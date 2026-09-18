@@ -19,6 +19,12 @@
 //! - `{"type": "ready", "version": "0.1.0", "mock": false, "readOnly": false}`, once, first
 //! - `{"type": "response", "id": 1, "ok": true, "result": ...}`, or `"ok": false, "error": "..."`
 //! - `{"type": "event", "session": 3, "event": {"type": "status" | "stats" | "log" | "tune" | "catalog", ...}}`
+//! - `{"type": "app_event", "event": {"type": "recording" | "stream", ...}}`: recording
+//!   progress about once a second and when it ends, and the TCP stream's state, over
+//!   every session (`studio_app::AppEvent`)
+//!
+//! Besides the Tauri commands' methods: `recording_start` takes an optional `dir`,
+//! where a recording without a `path` goes (the desktop app uses its data directory).
 
 use std::io::{self, Read};
 

@@ -38,11 +38,55 @@ impl FrameBuilder {
         self.times.is_empty()
     }
 
-    /// Encode pending ticks and clear them; `None` when there are none.
-    pub fn flush(&mut self) -> Option<Vec<u8>> {
+    /// Take pending ticks as a batch, leaving the builder empty for the same
+    /// ids; `None` when there are none.
+    pub fn take(&mut self) -> Option<SampleBatch> {
         if self.times.is_empty() {
             return None;
         }
+        Some(SampleBatch {
+            ids: self.ids.clone(),
+            times: std::mem::take(&mut self.times),
+            values: std::mem::take(&mut self.values),
+        })
+    }
+
+    /// Encode pending ticks and clear them; `None` when there are none.
+    pub fn flush(&mut self) -> Option<Vec<u8>> {
+        self.take().map(|batch| batch.encode())
+    }
+}
+
+/// Ticks flushed together: the columns of one frame, before encoding.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SampleBatch {
+    /// Watch id of each column
+    pub ids: Vec<u32>,
+    /// Seconds since the session started, one per tick
+    pub times: Vec<f64>,
+    /// Row-major: one row of `ids.len()` values per tick, NaN where a read failed
+    pub values: Vec<f64>,
+}
+
+impl SampleBatch {
+    pub fn ticks(&self) -> usize {
+        self.times.len()
+    }
+
+    /// The values of tick `row`, in `ids` order
+    pub fn row(&self, row: usize) -> &[f64] {
+        let c = self.ids.len();
+        &self.values[row * c..(row + 1) * c]
+    }
+
+    /// Column `col` over every tick
+    pub fn column(&self, col: usize) -> impl Iterator<Item = f64> + '_ {
+        let c = self.ids.len();
+        (0..self.times.len()).map(move |row| self.values[row * c + col])
+    }
+
+    /// The TTS1 frame for these ticks.
+    pub fn encode(&self) -> Vec<u8> {
         let n = self.times.len();
         let c = self.ids.len();
         let mut out = Vec::with_capacity(16 + 8 * n + c * (8 + 8 * n));
@@ -55,13 +99,11 @@ impl FrameBuilder {
         for (col, id) in self.ids.iter().enumerate() {
             out.extend_from_slice(&id.to_le_bytes());
             out.extend_from_slice(&0u32.to_le_bytes());
-            for row in 0..n {
-                out.extend_from_slice(&self.values[row * c + col].to_le_bytes());
+            for v in self.column(col) {
+                out.extend_from_slice(&v.to_le_bytes());
             }
         }
-        self.times.clear();
-        self.values.clear();
-        Some(out)
+        out
     }
 }
 

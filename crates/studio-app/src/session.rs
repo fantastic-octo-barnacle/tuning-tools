@@ -18,14 +18,15 @@ use studio_core::catalog::{Catalog, TableLayout};
 use studio_core::link::{spawn_link, LinkOptions};
 use studio_core::plan::{decode, scalar_len};
 use studio_core::session::SessionOptions;
-use studio_core::{ReadItem, Session, SessionCommand, SessionSink};
+use studio_core::tap::{SessionInfo, TunableName, TuneRequest};
+use studio_core::{ReadItem, Session, SessionCommand, SessionSink, TapSink, WatchMeta};
 use studio_dwarf::task_stats::TaskCounters;
 use studio_dwarf::tasks::TaskState;
 use studio_dwarf::tree::{self, NodeKind};
 use studio_dwarf::{ElfInfo, NodeRef, SymbolNode};
 
 use crate::elf::Tuning;
-use crate::StudioApp;
+use crate::{StudioApp, APP_VERSION};
 
 /// Scalars collected by [`StudioApp::watchable_leaves`] before it stops.
 const MAX_LEAVES: usize = 256;
@@ -120,12 +121,24 @@ pub struct ConnectRequest {
     pub rate_hz: f64,
 }
 
-/// A value to sample: a symbol path, or a tuning table value by id
-#[derive(Deserialize)]
+/// A value to sample: a symbol path, or a tuning table value by id. The rest
+/// describes it to recordings and the stream; the backend fills in what is missing.
+#[derive(Deserialize, Default, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct WatchRequest {
     pub id: u32,
     pub node: Option<NodeRef>,
     pub cell: Option<u32>,
+    /// Display name, e.g. `GIMBAL.yaw.angle`
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub unit: Option<String>,
+    /// Symbol path, or the tuning value's name
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub type_name: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -204,6 +217,22 @@ impl StudioApp {
         let tuning = self.elf.tuning()?;
         let open = self.probe_opener.clone();
         let elf_path = elf.path.clone();
+        self.tap.connecting(SessionInfo {
+            elf: Path::new(&elf.path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned()),
+            elf_path: Some(elf.path.clone()),
+            build_id: build_id(&elf_bytes),
+            chip: Some(config.chip.clone()),
+            carrier: "probe".into(),
+            port: None,
+            rate_hz: request.rate_hz,
+            app_version: APP_VERSION.into(),
+            tunables: tuning
+                .as_ref()
+                .map_or_else(Vec::new, |t| tunable_names(&t.1)),
+        });
+        let sink: Arc<dyn SessionSink> = Arc::new(TapSink::new(self.tap.clone(), sink));
         let session = Session::spawn(
             move || open(&config, Path::new(&elf_path)),
             SessionOptions {
@@ -239,6 +268,23 @@ impl StudioApp {
             .filter(|p| !p.is_empty())
             .ok_or("choose the serial port first")?;
         drop(self.session.take());
+        let elf = self.elf.current().ok();
+        self.tap.connecting(SessionInfo {
+            elf: elf.as_ref().and_then(|e| {
+                Path::new(&e.path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+            }),
+            elf_path: elf.as_ref().map(|e| e.path.clone()),
+            build_id: None,
+            chip: None,
+            carrier: "serial".into(),
+            port: Some(port.clone()),
+            rate_hz: request.rate_hz,
+            app_version: APP_VERSION.into(),
+            tunables: Vec::new(),
+        });
+        let sink: Arc<dyn SessionSink> = Arc::new(TapSink::new(self.tap.clone(), sink));
         let session = spawn_link(
             move || SerialStream::open(&port, 115_200).map(|s| Box::new(s) as Box<dyn ByteStream>),
             LinkOptions {
@@ -259,9 +305,11 @@ impl StudioApp {
         Ok(())
     }
 
-    /// Stop the session and wait for it to let go of the probe or port.
+    /// Stop the session and wait for it to let go of the probe or port. A
+    /// recording ends with it, after the session's last samples.
     pub fn disconnect(&self) {
         drop(self.session.take());
+        self.finish_recording();
     }
 
     /// Resolve watches and hand the sampleable ones to the session. Symbols
@@ -273,8 +321,14 @@ impl StudioApp {
             .iter()
             .filter_map(|w| w.cell.map(|cell| (w.id, cell)))
             .collect();
-        state.send(SessionCommand::SetCellWatches(cells.clone()));
-        *state.cell_watches.lock().expect("session state poisoned") = cells;
+        // Only a change of what is sampled goes to the session: a new unit or
+        // name must not restart sampling
+        let mut old_cells = state.cell_watches.lock().expect("session state poisoned");
+        if *old_cells != cells {
+            state.send(SessionCommand::SetCellWatches(cells.clone()));
+            *old_cells = cells;
+        }
+        drop(old_cells);
 
         let loaded = self
             .elf
@@ -282,6 +336,7 @@ impl StudioApp {
             .ok()
             .map(|info| (info, self.elf.tuning().ok().flatten()));
         let mut items = Vec::new();
+        let mut metas = Vec::new();
         let results = watches
             .into_iter()
             .map(|w| {
@@ -299,11 +354,19 @@ impl StudioApp {
                     Ok(None) => None,
                     Err(error) => Some(error),
                 };
+                if error.is_none() {
+                    metas.push(watch_meta(loaded.as_ref().map(|l| &*l.0), &w));
+                }
                 WatchResult { id: w.id, error }
             })
             .collect();
-        state.send(SessionCommand::SetWatches(items.clone()));
-        *state.watches.lock().expect("session state poisoned") = items;
+        let mut old_items = state.watches.lock().expect("session state poisoned");
+        if *old_items != items {
+            state.send(SessionCommand::SetWatches(items.clone()));
+            *old_items = items;
+        }
+        drop(old_items);
+        self.tap.set_watches(metas);
         Ok(results)
     }
 
@@ -313,7 +376,9 @@ impl StudioApp {
         if !self.session.send(SessionCommand::Discard { reply }) {
             return Err("connect to the target first".into());
         }
-        wait_reply_for(rx, REQUEST_TIMEOUT)
+        let result = wait_reply_for(rx, REQUEST_TIMEOUT);
+        self.note_request("discard", None, None, &result);
+        result
     }
 
     /// Ask the firmware to keep every current value across a power cycle.
@@ -322,11 +387,15 @@ impl StudioApp {
         if !self.session.send(SessionCommand::Save { reply }) {
             return Err("connect to the target first".into());
         }
-        wait_reply_for(rx, studio_core::link::SAVE_TIMEOUT + REQUEST_TIMEOUT)
+        let result = wait_reply_for(rx, studio_core::link::SAVE_TIMEOUT + REQUEST_TIMEOUT);
+        self.note_request("save", None, None, &result);
+        result
     }
 
     pub fn set_rate(&self, hz: f64) {
-        self.session.send(SessionCommand::SetRate(hz));
+        if self.session.send(SessionCommand::SetRate(hz)) {
+            self.tap.set_rate(hz);
+        }
     }
 
     /// Ask the firmware to run tuning value `id` at `value`.
@@ -338,7 +407,25 @@ impl StudioApp {
         {
             return Err("connect to the target first".into());
         }
-        wait_reply_for(rx, REQUEST_TIMEOUT)
+        let result = wait_reply_for(rx, REQUEST_TIMEOUT);
+        self.note_request("set", Some(id), Some(value), &result);
+        result
+    }
+
+    /// Tell recordings and the stream about a tuning request and how it went.
+    fn note_request(
+        &self,
+        action: &'static str,
+        id: Option<u32>,
+        value: Option<f64>,
+        result: &Result<(), String>,
+    ) {
+        self.tap.tune_request(TuneRequest {
+            action,
+            id,
+            value,
+            error: result.as_ref().err().cloned(),
+        });
     }
 
     /// Numeric leaves under `node` (the node itself when it is one), depth first.
@@ -473,6 +560,70 @@ impl StudioApp {
 fn wait_reply_for(rx: mpsc::Receiver<Result<(), String>>, timeout: Duration) -> Result<(), String> {
     rx.recv_timeout(timeout)
         .unwrap_or_else(|_| Err("the target did not take the write in time".into()))
+}
+
+/// How recordings and the stream describe a watch: what the UI sent, filled in
+/// from the ELF where it sent nothing.
+fn watch_meta(elf: Option<&ElfInfo>, w: &WatchRequest) -> WatchMeta {
+    let from_elf = || {
+        w.node
+            .as_ref()
+            .and_then(|node| tree::node(elf?, node).ok())
+            .map(|n| (n.path, n.type_name))
+    };
+    let (path, type_name) = match (&w.path, &w.type_name) {
+        (Some(path), Some(type_name)) => (path.clone(), type_name.clone()),
+        (path, type_name) => {
+            let found = from_elf();
+            (
+                path.clone()
+                    .or_else(|| found.as_ref().map(|f| f.0.clone()))
+                    .or_else(|| w.cell.map(|c| format!("cell {c}")))
+                    .unwrap_or_default(),
+                type_name
+                    .clone()
+                    .or_else(|| found.map(|f| f.1))
+                    .unwrap_or_default(),
+            )
+        }
+    };
+    let name = w
+        .name
+        .clone()
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| short_name(&path).to_string());
+    WatchMeta {
+        id: w.id,
+        name,
+        path,
+        type_name,
+        unit: w.unit.clone().filter(|u| !u.trim().is_empty()),
+    }
+}
+
+/// `GIMBAL.yaw.angle` for `gimbal::GIMBAL.yaw.angle`, as the legend shows it
+fn short_name(path: &str) -> &str {
+    path.rfind("::").map_or(path, |at| &path[at + 2..])
+}
+
+fn tunable_names(catalog: &Catalog) -> Vec<TunableName> {
+    catalog
+        .entries
+        .iter()
+        .map(|e| TunableName {
+            id: e.id,
+            name: e.name.clone(),
+            unit: Some(e.unit.clone()).filter(|u| !u.is_empty()),
+        })
+        .collect()
+}
+
+/// The ELF's GNU build id as hex, when it has one
+fn build_id(elf: &[u8]) -> Option<String> {
+    use object::Object;
+    let file = object::File::parse(elf).ok()?;
+    let id = file.build_id().ok()??;
+    Some(id.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 fn resolve_watch(

@@ -10,8 +10,11 @@ pub mod rtt_tuning;
 pub mod schedule;
 pub mod session;
 pub mod stats;
+pub mod tap;
 pub mod tune;
 pub mod wire;
 
+pub use frame::SampleBatch;
 pub use plan::{ReadItem, ReadPlan};
 pub use session::{Session, SessionCommand, SessionEvent, SessionSink};
+pub use tap::{Tap, TapEvent, TapSink, WatchMeta, WatchSet};

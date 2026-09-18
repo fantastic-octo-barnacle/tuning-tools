@@ -49,12 +49,19 @@ export const harness = {
   errors: [] as string[],
   log: [] as string[],
   launch: [] as unknown[],
+  /** What the next save dialog answers */
+  savePath: undefined as string | undefined,
+  /** Commands run through `commands.executeCommand` */
+  executed: [] as { name: string; args: unknown[] }[],
 };
 
 export const commands = {
   registerCommand(name: string, fn: () => unknown) {
     harness.commands.set(name, fn);
     return new Disposable(() => harness.commands.delete(name));
+  },
+  async executeCommand(name: string, ...args: unknown[]) {
+    harness.executed.push({ name, args });
   },
 };
 
@@ -63,6 +70,7 @@ export const window = {
   showErrorMessage: async (m: string) => void harness.errors.push(m),
   showInformationMessage: async (m: string) => void harness.info.push(m),
   showOpenDialog: async () => undefined,
+  showSaveDialog: async () => (harness.savePath ? Uri.file(harness.savePath) : undefined),
   registerWebviewPanelSerializer: () => new Disposable(() => {}),
   createWebviewPanel(_type: string, _title: string, _column: unknown, options: unknown) {
     const fromPage = emitter<any>();

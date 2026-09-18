@@ -130,6 +130,11 @@ impl MockLink {
         self.0.lock().unwrap().faults.push((start, end));
     }
 
+    /// Let every read succeed again
+    pub fn clear_faults(&self) {
+        self.0.lock().unwrap().faults.clear();
+    }
+
     /// Number of `MemoryAccess::read` calls so far
     pub fn read_calls(&self) -> u64 {
         self.0.lock().unwrap().reads

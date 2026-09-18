@@ -1,4 +1,5 @@
-import { ReactNode } from "react";
+import { CSSProperties, ReactNode, RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 export const button = "rounded-sm border border-rule bg-panel px-2.5 py-0.5 hover:bg-sunken disabled:opacity-50 disabled:hover:bg-panel";
 export const primaryButton =
@@ -89,6 +90,102 @@ export function Tab({
     >
       {children}
       {count !== undefined && count !== null && <span className="ml-1 text-faint">{count}</span>}
+    </button>
+  );
+}
+
+/**
+ * A panel under or over its anchor, closed by Escape or a click outside. Fixed to the viewport,
+ * so a clipping parent (the status bar) does not cut it off.
+ */
+export function Popover({
+  anchor,
+  open,
+  onClose,
+  place,
+  label,
+  children,
+}: {
+  anchor: RefObject<HTMLElement | null>;
+  open: boolean;
+  onClose: () => void;
+  /** Under the anchor's left edge, or over its right edge */
+  place: "below-left" | "above-right";
+  label: string;
+  children: ReactNode;
+}) {
+  const panel = useRef<HTMLDivElement>(null);
+  const [at, setAt] = useState<CSSProperties | null>(null);
+
+  useLayoutEffect(() => {
+    if (!open || !anchor.current) return;
+    const r = anchor.current.getBoundingClientRect();
+    setAt(
+      place === "below-left"
+        ? { top: r.bottom + 4, left: Math.max(4, r.left) }
+        : { bottom: window.innerHeight - r.top + 4, right: Math.max(4, window.innerWidth - r.right) },
+    );
+  }, [open, anchor, place]);
+
+  useEffect(() => {
+    if (!open) return;
+    const down = (e: PointerEvent) => {
+      const t = e.target as Node;
+      if (!panel.current?.contains(t) && !anchor.current?.contains(t)) onClose();
+    };
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    const resize = () => onClose();
+    document.addEventListener("pointerdown", down);
+    document.addEventListener("keydown", key);
+    window.addEventListener("resize", resize);
+    return () => {
+      document.removeEventListener("pointerdown", down);
+      document.removeEventListener("keydown", key);
+      window.removeEventListener("resize", resize);
+    };
+  }, [open, onClose, anchor]);
+
+  if (!open || !at) return null;
+  // Portalled so the panel inherits nothing from where its anchor sits
+  // (the status bar's nowrap would stop its text wrapping)
+  return createPortal(
+    <div
+      ref={panel}
+      role="dialog"
+      aria-label={label}
+      style={at}
+      className="fixed z-50 max-w-[calc(100vw-8px)] min-w-[220px] rounded-sm border border-rule bg-surface p-1 text-[12px] whitespace-normal text-ink shadow-lg"
+    >
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
+/** A row in a Popover used as a menu */
+export function MenuItem({
+  onSelect,
+  disabled,
+  title,
+  children,
+}: {
+  onSelect: () => void;
+  disabled?: boolean;
+  title?: string;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      disabled={disabled}
+      title={title}
+      onClick={onSelect}
+      className="block w-full rounded-[1px] px-2 py-1 text-left enabled:hover:bg-sunken disabled:text-faint"
+    >
+      {children}
     </button>
   );
 }

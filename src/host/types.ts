@@ -9,6 +9,7 @@ import type {
   WatchResult,
   WatchTarget,
 } from "../live/api";
+import type { AppEvent, AppState, CsvExport, DataStreamState, RecordingState } from "../live/recording";
 
 /** Where a session's output goes; one pair per `connect` */
 export interface SessionHandlers {
@@ -65,9 +66,19 @@ export interface HostNotice {
   reconnect: boolean;
 }
 
+/** Recording, CSV export, the TCP stream and revealing files: whether this host has them */
+export interface HostFeatures {
+  record: SourceState;
+  exportCsv: SourceState;
+  stream: SourceState;
+  /** Show a file in the system's file manager */
+  reveal: SourceState;
+}
+
 export interface HostStatus {
   sources: HostSources;
   notice: HostNotice | null;
+  features: HostFeatures;
 }
 
 /** Small UI state kept across launches: connection and scope settings, watch lists */
@@ -112,4 +123,26 @@ export interface Host {
   taskStates(): Promise<TaskSnapshot>;
   /** Read each numeric node once, outside the watch list */
   readValues(nodes: NodeRef[]): Promise<ValueRead[]>;
+
+  /** Record the connected session to `path`, or to a new file in the host's recordings directory */
+  recordingStart(path: string | null): Promise<RecordingState>;
+  /** Close the recording; how it went */
+  recordingStop(): Promise<RecordingState>;
+  /** Write a recording's watches as a wide CSV; `csvPath` defaults to the recording's, with `.csv` */
+  exportCsv(mcapPath: string, csvPath: string | null): Promise<CsvExport>;
+  /** Serve samples as newline-delimited JSON over TCP (docs/stream.md) */
+  streamStart(port: number, bindAll: boolean): Promise<DataStreamState>;
+  streamStop(): Promise<DataStreamState>;
+  /** Recording and stream state now, for a page that starts after they did */
+  appState(): Promise<AppState>;
+  /** Recording progress (about once a second) and stream changes; returns an unsubscribe */
+  watchAppEvents(listener: (event: AppEvent) => void): () => void;
+  /** Ask where to record; null when they cancel */
+  pickRecordingPath(): Promise<string | null>;
+  /** Ask where to write a CSV, starting at `suggested`; null when they cancel */
+  pickCsvPath(suggested: string): Promise<string | null>;
+  /** Ask for a recording to export; null when they cancel */
+  pickRecording(): Promise<string | null>;
+  /** Show a file in the system's file manager */
+  reveal(path: string): Promise<void>;
 }

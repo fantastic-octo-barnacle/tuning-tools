@@ -7,7 +7,16 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+mcap = { version = "0.25", default-features = false, features = ["zstd"] }
+object = { workspace = true }
+ryu = "1"
 serde = { workspace = true }
+serde_json = { workspace = true }
 studio-carriers = { path = "../studio-carriers" }
 studio-core = { path = "../studio-core" }
 studio-dwarf = { path = "../studio-dwarf" }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

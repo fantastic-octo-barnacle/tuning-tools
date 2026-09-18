@@ -5,14 +5,14 @@
 use std::sync::mpsc::{self, Sender, SyncSender, TryRecvError};
 use std::sync::Arc;
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde::Serialize;
 use studio_carriers::rtt::RttReader;
 use studio_carriers::{cortex_m, CarrierError, CoreState, Link, MemoryAccess, StreamState};
 
 use crate::catalog::{Catalog, TableLayout};
-use crate::frame::FrameBuilder;
+use crate::frame::{FrameBuilder, SampleBatch};
 use crate::log::{LogDecoder, LogLine};
 use crate::plan::{ReadItem, ReadPlan};
 use crate::rtt_tuning::{FramedRequest, RttTuning};
@@ -122,6 +122,11 @@ pub trait SessionSink: Send + Sync + 'static {
     /// Deliver an encoded sample frame; `false` when it could not be delivered.
     fn frame(&self, bytes: Vec<u8>) -> bool;
     fn event(&self, event: SessionEvent);
+    /// Every flushed batch, before it is encoded for [`SessionSink::frame`].
+    /// Must not block: it runs on the sampling thread.
+    fn samples(&self, _batch: &Arc<SampleBatch>) {}
+    /// The wall-clock time of the session's time zero, once it is taken.
+    fn started(&self, _at: SystemTime) {}
 }
 
 pub struct SessionOptions {
@@ -229,6 +234,7 @@ struct Worker {
 impl Worker {
     fn new(options: SessionOptions, sink: Arc<dyn SessionSink>) -> Self {
         let start = Instant::now();
+        sink.started(SystemTime::now());
         let decoder = options.elf.and_then(|elf| {
             let log_sink = sink.clone();
             match LogDecoder::spawn(elf, move |lines| {
@@ -587,8 +593,10 @@ impl Worker {
     }
 
     fn flush_frame(&mut self) {
-        if let Some(bytes) = self.frame.flush() {
-            if self.sink.frame(bytes) {
+        if let Some(batch) = self.frame.take() {
+            let batch = Arc::new(batch);
+            self.sink.samples(&batch);
+            if self.sink.frame(batch.encode()) {
                 self.stats.frames_sent += 1;
             } else {
                 self.stats.frames_dropped += 1;

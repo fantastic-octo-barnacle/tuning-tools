@@ -1,7 +1,8 @@
 import { useEffect, useId, useState } from "react";
-import { ConnectDefaults, HostStatus, host } from "../host";
+import { ConnectDefaults, host } from "../host";
 import { Segmented, button, field, primaryButton } from "../ui";
 import type * as api from "./api";
+import { useHostStatus } from "./useHostStatus";
 import { Link } from "./useSession";
 
 const RATES = [10, 50, 100, 200, 500, 1000];
@@ -26,16 +27,6 @@ function loadSettings(): Settings {
     return fallback;
   }
 }
-
-/** The host's sources and notice, kept current */
-function useHostStatus(): HostStatus {
-  const [status, setStatus] = useState<HostStatus | null>(null);
-  useEffect(() => host.watchStatus(setStatus), []);
-  // watchStatus calls back at once, so this fallback only covers the first render
-  return status ?? { sources: { probe: AVAILABLE, serial: AVAILABLE, debugger: { available: false, reason: null } }, notice: null };
-}
-
-const AVAILABLE = { available: true, reason: null };
 
 interface Props {
   link: Link;

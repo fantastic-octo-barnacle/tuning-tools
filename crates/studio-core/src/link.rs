@@ -152,6 +152,7 @@ impl Worker {
             last_error: None,
         };
 
+        worker.sink.started(SystemTime::now());
         let hello = (0..HELLO_ATTEMPTS)
             .find_map(|_| worker.call(cmd::HELLO, &[], HELLO_TIMEOUT).transpose())
             .unwrap_or_else(|| {
@@ -542,8 +543,10 @@ impl Worker {
     }
 
     fn flush_frame(&mut self) {
-        if let Some(bytes) = self.frame.flush() {
-            if self.sink.frame(bytes) {
+        if let Some(batch) = self.frame.take() {
+            let batch = Arc::new(batch);
+            self.sink.samples(&batch);
+            if self.sink.frame(batch.encode()) {
                 self.stats.frames_sent += 1;
             } else {
                 self.stats.frames_dropped += 1;
