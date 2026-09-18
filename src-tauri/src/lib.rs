@@ -23,7 +23,8 @@ pub fn run() {
             session::session_discard,
             session::session_save,
             session::list_serial_ports,
-            session::watchable_leaves
+            session::watchable_leaves,
+            session::session_task_states
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

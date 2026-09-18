@@ -1,5 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { Catalog, NodeRef, SymbolNode } from "../elf/api";
+import { Catalog, NodeRef, SourceLocation, SymbolNode } from "../elf/api";
 
 export interface ProbeInfo {
   selector: string;
@@ -137,4 +137,33 @@ export function saveValues(): Promise<void> {
 /** Ask the firmware for every tunable's built-in default. */
 export function discardValues(): Promise<void> {
   return invoke("session_discard");
+}
+
+export interface TaskPoint {
+  /** `Unresumed`, `Returned`, `Panicked`, or `Suspend0`, `Suspend1`, … */
+  label: string;
+  /** The future's variant node path */
+  path: string;
+  /** The `.await` a suspended task is parked on */
+  location: SourceLocation | null;
+}
+
+export interface TaskState {
+  /** The pool slot holds a future */
+  spawned: boolean;
+  /** Woken, waiting in the run queue to be polled */
+  queued: boolean;
+  at: TaskPoint | null;
+}
+
+export interface TaskStatus {
+  /** The task's root node path */
+  path: string;
+  state: TaskState | null;
+  error: string | null;
+}
+
+/** Every embassy task's state, read once over the probe. */
+export function taskStates(): Promise<TaskStatus[]> {
+  return invoke("session_task_states");
 }

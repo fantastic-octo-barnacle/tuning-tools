@@ -9,6 +9,7 @@ pub mod dwarf_parser;
 pub mod elf;
 pub mod error;
 pub mod rebuild;
+pub mod tasks;
 pub mod tree;
 pub mod type_table;
 pub mod variable_type;

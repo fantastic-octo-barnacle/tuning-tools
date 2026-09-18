@@ -410,6 +410,17 @@ impl VariantPart {
 pub struct VariantDef {
     pub discr_value: Option<u64>,
     pub member: MemberDef,
+    /// Where the variant is declared. For an `async fn`'s state, a suspend
+    /// variant points at its `.await`.
+    pub location: Option<SourceLocation>,
+}
+
+/// A file and line from `DW_AT_decl_file` / `DW_AT_decl_line`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SourceLocation {
+    /// As the compiler recorded it; absolute for Rust builds
+    pub file: String,
+    pub line: u64,
 }
 
 /// Base class for C++ inheritance

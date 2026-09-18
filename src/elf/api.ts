@@ -4,7 +4,9 @@ export type Step =
   | { kind: "member"; value: string }
   | { kind: "index"; value: number }
   | { kind: "variant"; value: string }
-  | { kind: "discriminant" };
+  | { kind: "discriminant" }
+  /** Slot of an embassy task pool, as the task's `TaskStorage` */
+  | { kind: "task"; value: number };
 
 export interface NodeRef {
   symbol: string;
@@ -46,6 +48,18 @@ export interface SymbolNode {
   bitOffset: number | null;
   bitSize: number | null;
   discrValue: number | null;
+  /** Where a variant is declared; an `async fn` suspend state's is its `.await` */
+  location: SourceLocation | null;
+}
+
+export interface SourceLocation {
+  file: string;
+  line: number;
+}
+
+/** `main.rs:48` */
+export function shortLocation(at: SourceLocation): string {
+  return `${at.file.split(/[\\/]/).pop()}:${at.line}`;
 }
 
 export interface RootNode extends SymbolNode {
@@ -54,6 +68,15 @@ export interface RootNode extends SymbolNode {
   readOnly: boolean;
   /** Runtime plumbing: task pools, RTT buffers, embassy and defmt state */
   internal: boolean;
+}
+
+/** One slot of an embassy task pool */
+export interface Task {
+  /** Label is the task name, children are the `TaskStorage` members */
+  root: RootNode;
+  name: string;
+  slot: number;
+  slots: number;
 }
 
 export interface Children {
@@ -106,6 +129,8 @@ export interface Catalog {
 export interface OpenedElf {
   summary: ElfSummary;
   roots: RootNode[];
+  /** embassy task slots */
+  tasks: Task[];
   parseMs: number;
   /** The firmware's tuning table, when it declares one */
   catalog: Catalog | null;

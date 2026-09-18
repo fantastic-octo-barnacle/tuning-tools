@@ -42,6 +42,20 @@ export function watchable(node: SymbolNode) {
   return node.kind === "struct" || node.kind === "array" || node.kind === "taggedEnum";
 }
 
+/** Live text shown in a row in place of its type */
+export interface RowNote {
+  text: string;
+  title?: string;
+  tone?: "ink" | "muted" | "led" | "danger";
+}
+
+const noteTone: Record<NonNullable<RowNote["tone"]>, string> = {
+  ink: "text-ink",
+  muted: "text-muted",
+  led: "text-led",
+  danger: "text-danger",
+};
+
 interface Props {
   roots: RootNode[];
   selected: SymbolNode | null;
@@ -49,9 +63,23 @@ interface Props {
   /** Watch a node (a number, or the numbers inside it) */
   onWatch?: (node: SymbolNode) => void;
   watched?: Set<string>;
+  /** Keyed by node path */
+  notes?: Map<string, RowNote>;
+  /** Show the RAM only / App only filters */
+  filters?: boolean;
+  label?: string;
 }
 
-export function SymbolTree({ roots, selected, onSelect, onWatch, watched }: Props) {
+export function SymbolTree({
+  roots,
+  selected,
+  onSelect,
+  onWatch,
+  watched,
+  notes,
+  filters = true,
+  label = "Symbols",
+}: Props) {
   const [filter, setFilter] = useState("");
   const [hideReadOnly, setHideReadOnly] = useState(true);
   const [hideInternal, setHideInternal] = useState(true);
@@ -70,11 +98,11 @@ export function SymbolTree({ roots, selected, onSelect, onWatch, watched }: Prop
     () =>
       roots.filter(
         (r) =>
-          (!hideReadOnly || !r.readOnly) &&
-          (!hideInternal || !r.internal) &&
+          (!filters || !hideReadOnly || !r.readOnly) &&
+          (!filters || !hideInternal || !r.internal) &&
           (!needle || r.path.toLowerCase().includes(needle)),
       ),
-    [roots, hideReadOnly, hideInternal, needle],
+    [roots, filters, hideReadOnly, hideInternal, needle],
   );
   const tree = useMemo(() => buildNamespaces(visibleRoots), [visibleRoots]);
 
@@ -171,33 +199,37 @@ export function SymbolTree({ roots, selected, onSelect, onWatch, watched }: Prop
           spellCheck={false}
           className="min-w-0 flex-1 rounded-sm border border-rule bg-surface px-2 py-1 font-mono text-[12px] placeholder:text-muted"
         />
-        <label className="flex shrink-0 items-center gap-1.5 text-muted">
-          <input
-            type="checkbox"
-            checked={hideReadOnly}
-            onChange={(e) => setHideReadOnly(e.currentTarget.checked)}
-            className="accent-[var(--led)]"
-          />
-          RAM only
-        </label>
-        <label
-          title="Hide task pools, RTT buffers, and embassy and defmt state"
-          className="flex shrink-0 items-center gap-1.5 text-muted"
-        >
-          <input
-            type="checkbox"
-            checked={hideInternal}
-            onChange={(e) => setHideInternal(e.currentTarget.checked)}
-            className="accent-[var(--led)]"
-          />
-          App only
-        </label>
+        {filters && (
+          <>
+            <label className="flex shrink-0 items-center gap-1.5 text-muted">
+              <input
+                type="checkbox"
+                checked={hideReadOnly}
+                onChange={(e) => setHideReadOnly(e.currentTarget.checked)}
+                className="accent-[var(--led)]"
+              />
+              RAM only
+            </label>
+            <label
+              title="Hide task pools, RTT buffers, and embassy and defmt state"
+              className="flex shrink-0 items-center gap-1.5 text-muted"
+            >
+              <input
+                type="checkbox"
+                checked={hideInternal}
+                onChange={(e) => setHideInternal(e.currentTarget.checked)}
+                className="accent-[var(--led)]"
+              />
+              App only
+            </label>
+          </>
+        )}
       </div>
 
       <div
         ref={listRef}
         role="tree"
-        aria-label="Symbols"
+        aria-label={label}
         onKeyDown={onKeyDown}
         className="min-h-0 flex-1 overflow-auto py-1"
       >
@@ -266,14 +298,23 @@ export function SymbolTree({ roots, selected, onSelect, onWatch, watched }: Prop
                   >
                     {row.node.label}
                   </span>
-                  <span
-                    title={row.node.wrapper ? `${row.node.typeName} inside ${row.node.wrapper}` : row.node.typeName}
-                    className={`ml-auto min-w-0 truncate pl-3 font-mono text-[11px] ${
-                      row.node.kind === "scalar" ? "text-scalar" : row.node.kind.endsWith("num") ? "text-enum" : "text-muted"
-                    }`}
-                  >
-                    {row.node.typeName}
-                  </span>
+                  {notes?.has(row.key) ? (
+                    <span
+                      title={notes.get(row.key)!.title}
+                      className={`ml-auto min-w-0 truncate pl-3 font-mono text-[11px] ${noteTone[notes.get(row.key)!.tone ?? "ink"]}`}
+                    >
+                      {notes.get(row.key)!.text}
+                    </span>
+                  ) : (
+                    <span
+                      title={row.node.wrapper ? `${row.node.typeName} inside ${row.node.wrapper}` : row.node.typeName}
+                      className={`ml-auto min-w-0 truncate pl-3 font-mono text-[11px] ${
+                        row.node.kind === "scalar" ? "text-scalar" : row.node.kind.endsWith("num") ? "text-enum" : "text-muted"
+                      }`}
+                    >
+                      {row.node.typeName}
+                    </span>
+                  )}
                   {onWatch && watchable(row.node) && (
                     <button
                       tabIndex={-1}

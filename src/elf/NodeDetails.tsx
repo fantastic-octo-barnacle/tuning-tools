@@ -1,4 +1,4 @@
-import { RootNode, SymbolNode, hex, scalarName } from "./api";
+import { RootNode, SymbolNode, hex, scalarName, shortLocation } from "./api";
 import { MemoryStrip } from "./MemoryStrip";
 import { watchable } from "./SymbolTree";
 
@@ -71,6 +71,11 @@ export function NodeDetails({ node, roots, onWatch }: Props) {
           </Field>
         )}
         {node.discrValue !== null && <Field name="Tag value">{node.discrValue}</Field>}
+        {node.location && (
+          <Field name="Declared at">
+            <span title={`${node.location.file}:${node.location.line}`}>{shortLocation(node.location)}</span>
+          </Field>
+        )}
         {node.childCount !== null && node.kind !== "scalar" && (
           <Field name={node.kind === "array" ? "Elements" : node.kind === "taggedEnum" ? "Entries" : "Members"}>
             {node.childCount}

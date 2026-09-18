@@ -10,10 +10,14 @@
 //! node has the type of the value inside, and its children are that value's.
 //! A reference therefore names members of the innermost type; one that names a
 //! wrapper's own member still resolves.
+//!
+//! An embassy task pool is untyped bytes; [`Step::Task`] reads one of its slots
+//! as the task's `TaskStorage`, see [`crate::tasks`].
 
 use crate::dwarf_parser::DwarfDiagnostics;
 use crate::elf::{ElfInfo, SymbolInfo};
-use crate::type_table::{MemberDef, TypeDef, TypeId, TypeTable};
+use crate::tasks;
+use crate::type_table::{MemberDef, SourceLocation, TypeDef, TypeId, TypeTable, VariantDef};
 use crate::variable_type::VariableType;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -31,6 +35,9 @@ pub enum Step {
     Variant(String),
     /// Tag member of a Rust enum
     Discriminant,
+    /// Slot of an embassy task pool, as the task's `TaskStorage`; only the
+    /// first step
+    Task(u64),
 }
 
 /// Stable reference to a node: full symbol path, then steps into its type.
@@ -58,7 +65,8 @@ impl NodeRef {
     }
 }
 
-/// `gimbal::GIMBAL.pitch.limit#Some.__0`, `SAMPLES[3]`, `cmd#<discriminant>`
+/// `gimbal::GIMBAL.pitch.limit#Some.__0`, `SAMPLES[3]`, `cmd#<discriminant>`,
+/// `app::led_task::POOL[task 0].future`
 impl fmt::Display for NodeRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.symbol)?;
@@ -68,6 +76,7 @@ impl fmt::Display for NodeRef {
                 Step::Index(i) => write!(f, "[{i}]")?,
                 Step::Variant(name) => write!(f, "#{name}")?,
                 Step::Discriminant => f.write_str("#<discriminant>")?,
+                Step::Task(slot) => write!(f, "[task {slot}]")?,
             }
         }
         Ok(())
@@ -118,6 +127,9 @@ pub struct SymbolNode {
     pub bit_size: Option<u64>,
     /// For variant nodes: the tag value selecting this variant (`None` = default)
     pub discr_value: Option<u64>,
+    /// For variant nodes: where the variant is declared; an `async fn` suspend
+    /// variant's is its `.await`
+    pub location: Option<SourceLocation>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -298,11 +310,14 @@ pub fn children(
                 .iter()
                 .map(|d| member_node(Step::Discriminant, d, None))
                 .chain(part.variants.iter().map(|v| {
-                    member_node(
+                    let mut n = member_node(
                         Step::Variant(v.member.name.clone()),
                         &v.member,
                         v.discr_value,
-                    )
+                    );
+                    n.label = variant_label(table, v);
+                    n.location = v.location.clone();
+                    n
                 }))
                 .collect(),
             None => s
@@ -368,27 +383,89 @@ fn resolve<'e>(elf: &'e ElfInfo, node: &NodeRef) -> Result<(&'e SymbolInfo, Reso
 
     let mut walked = NodeRef::root(&node.symbol);
     for step in &node.steps {
+        if let Step::Task(slot) = step {
+            at = enter_task(table, sym, &walked, *slot)?;
+            walked = walked.child(step.clone());
+            continue;
+        }
         // Innermost first: that is what the tree hands out. Outer levels match
         // references that step through a wrapper's own members.
         let mut tried = wrapper_chain(table, at.type_id)
             .into_iter()
             .rev()
             .map(|t| enter(table, t, at.address, step));
-        let innermost = tried.next().expect("a chain holds at least the type itself");
+        let innermost = tried
+            .next()
+            .expect("a chain holds at least the type itself");
         at = match innermost {
             Ok(next) => next,
-            Err(reason) => tried.find_map(Result::ok).ok_or_else(|| TreeError::BadStep {
-                at: walked.to_string(),
-                reason,
-            })?,
+            Err(reason) => tried
+                .find_map(Result::ok)
+                .ok_or_else(|| TreeError::BadStep {
+                    at: walked.to_string(),
+                    reason,
+                })?,
         };
         walked = walked.child(step.clone());
     }
     Ok((sym, at))
 }
 
+/// Slot `slot` of the task pool `sym`, typed as the task's storage.
+fn enter_task(
+    table: &TypeTable,
+    sym: &SymbolInfo,
+    walked: &NodeRef,
+    slot: u64,
+) -> Result<Resolved, TreeError> {
+    let bad = |reason: String| TreeError::BadStep {
+        at: walked.to_string(),
+        reason,
+    };
+    if !walked.steps.is_empty() {
+        return Err(bad("only a task pool has task slots".into()));
+    }
+    let storage = tasks::storage_type(table, &sym.demangled_name, sym.size)
+        .ok_or_else(|| bad("not an embassy task pool with a known task type".into()))?;
+    if slot >= storage.slots {
+        return Err(bad(format!(
+            "task slot {slot} out of bounds; the pool holds {}",
+            storage.slots
+        )));
+    }
+    Ok(Resolved {
+        label: format!("[task {slot}]"),
+        address: sym.address + slot * storage.size,
+        type_id: storage.type_id,
+        bit_offset: None,
+        bit_size: None,
+        discr_value: None,
+    })
+}
+
+/// A variant's name. Coroutine variants are members named by number (`3`)
+/// with a payload type named after the state (`…::Suspend0`).
+fn variant_label(table: &TypeTable, v: &VariantDef) -> String {
+    let name = &v.member.name;
+    if !name.bytes().all(|b| b.is_ascii_digit()) {
+        return name.clone();
+    }
+    match table
+        .get(table.get_underlying(v.member.type_id))
+        .and_then(TypeDef::name)
+    {
+        Some(payload) => split_path(payload).pop().unwrap_or_else(|| name.clone()),
+        None => name.clone(),
+    }
+}
+
 /// Take `step` from a value of type `type_id` at `address`.
-fn enter(table: &TypeTable, type_id: TypeId, address: u64, step: &Step) -> Result<Resolved, String> {
+fn enter(
+    table: &TypeTable,
+    type_id: TypeId,
+    address: u64,
+    step: &Step,
+) -> Result<Resolved, String> {
     let def = table.get(table.get_underlying(type_id));
     let (member, discr_value) = match (step, def) {
         (Step::Member(name), Some(TypeDef::Struct(s) | TypeDef::Union(s))) => (
@@ -413,6 +490,7 @@ fn enter(table: &TypeTable, type_id: TypeId, address: u64, step: &Step) -> Resul
                 .ok_or("not a tagged enum")?,
             None,
         ),
+        (Step::Task(_), _) => return Err("only a task pool has task slots".to_string()),
         (Step::Index(i), Some(TypeDef::Array { element, count })) => {
             if count.is_some_and(|c| *i >= c) {
                 return Err(format!("index {i} out of bounds"));
@@ -449,7 +527,8 @@ const MAX_WRAPPERS: usize = 16;
 /// filling the whole wrapper. `Atomic<u32>.v`, `Mutex.data` (beside a
 /// zero-sized `raw`), `MaybeUninit.value`. Tagged enums are not wrappers.
 fn held_member(table: &TypeTable, type_id: TypeId) -> Option<&MemberDef> {
-    let (Some(TypeDef::Struct(s)) | Some(TypeDef::Union(s))) = table.get(table.get_underlying(type_id))
+    let (Some(TypeDef::Struct(s)) | Some(TypeDef::Union(s))) =
+        table.get(table.get_underlying(type_id))
     else {
         return None;
     };
@@ -460,7 +539,9 @@ fn held_member(table: &TypeTable, type_id: TypeId) -> Option<&MemberDef> {
     for m in &s.members {
         match table.type_size(m.type_id) {
             Some(0) => {}
-            Some(size) if size == s.size && m.offset == 0 && m.bit_size.is_none() && held.is_none() => {
+            Some(size)
+                if size == s.size && m.offset == 0 && m.bit_size.is_none() && held.is_none() =>
+            {
                 held = Some(m)
             }
             _ => return None,
@@ -509,7 +590,7 @@ fn is_internal(path: &str, section: &str, type_name: &str) -> bool {
         || RUNTIME_CRATES.iter().any(|c| krate.starts_with(c))
 }
 
-fn describe(
+pub(crate) fn describe(
     table: &TypeTable,
     node: NodeRef,
     label: String,
@@ -553,6 +634,7 @@ fn describe(
         bit_offset: None,
         bit_size: None,
         discr_value: None,
+        location: None,
     }
 }
 
@@ -752,7 +834,12 @@ mod tests {
 
         let gimbal = root(GIMBAL);
         assert_eq!(gimbal.node.type_name, "Gimbal<4>");
-        assert!(gimbal.node.wrapper.as_deref().unwrap().starts_with("Shared<"));
+        assert!(gimbal
+            .node
+            .wrapper
+            .as_deref()
+            .unwrap()
+            .starts_with("Shared<"));
 
         // A plain struct has no wrapper
         let yaw = node(&elf, &gimbal_value().child(Step::Member("yaw".into()))).unwrap();
@@ -775,24 +862,52 @@ mod tests {
         assert_eq!((long.address, long.scalar), (short.address, short.scalar));
 
         // Stopping on a wrapper member gives the value inside it
-        let cell = node(&elf, &NodeRef::root(GIMBAL).child(Step::Member("__0".into()))).unwrap();
+        let cell = node(
+            &elf,
+            &NodeRef::root(GIMBAL).child(Step::Member("__0".into())),
+        )
+        .unwrap();
         assert_eq!(cell.type_name, "Gimbal<4>");
     }
 
     #[test]
     fn runtime_statics_are_internal() {
-        assert!(is_internal("sentry::led_task::POOL", ".bss", "TaskPoolHolder<104, 8>"));
-        assert!(is_internal("app::CAN3_BUFFERS", ".bss", "StaticCell<bsp::FdCanBuffers>"));
-        assert!(is_internal("_SEGGER_RTT", ".rtt", "MaybeUninit<RttControlBlock>"));
-        assert!(is_internal("hal::rtt::init::_RTT_CHANNEL_BUFFER", ".rtt", "MaybeUninit<[u8; 512]>"));
+        assert!(is_internal(
+            "sentry::led_task::POOL",
+            ".bss",
+            "TaskPoolHolder<104, 8>"
+        ));
+        assert!(is_internal(
+            "app::CAN3_BUFFERS",
+            ".bss",
+            "StaticCell<bsp::FdCanBuffers>"
+        ));
+        assert!(is_internal(
+            "_SEGGER_RTT",
+            ".rtt",
+            "MaybeUninit<RttControlBlock>"
+        ));
+        assert!(is_internal(
+            "hal::rtt::init::_RTT_CHANNEL_BUFFER",
+            ".rtt",
+            "MaybeUninit<[u8; 512]>"
+        ));
         assert!(is_internal("embassy_stm32::dma::STATE", ".bss", "State"));
         assert!(is_internal(
             "<embassy_stm32::_generated::peripherals::UART5 as embassy_stm32::usart::SealedInstance>::state::STATE",
             ".bss",
             "State"
         ));
-        assert!(!is_internal("app::transport::DR16_ERRORS", ".bss", "Atomic<u32>"));
-        assert!(!is_internal("app::TELEMETRY", ".bss", "Signal<CriticalSectionRawMutex, Telemetry>"));
+        assert!(!is_internal(
+            "app::transport::DR16_ERRORS",
+            ".bss",
+            "Atomic<u32>"
+        ));
+        assert!(!is_internal(
+            "app::TELEMETRY",
+            ".bss",
+            "Signal<CriticalSectionRawMutex, Telemetry>"
+        ));
 
         let elf = rust();
         assert!(roots(&elf).iter().all(|r| !r.internal));

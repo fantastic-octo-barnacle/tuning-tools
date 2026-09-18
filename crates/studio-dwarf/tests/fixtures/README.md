@@ -74,6 +74,21 @@ RUSTC_BOOTSTRAP=1 RUSTFLAGS="-C link-arg=-Tlink.x -Z unstable-options -C symbol-
 cp target-legacy/thumbv7em-none-eabihf/release/rust_fixture ../rust_legacy.elf
 ```
 
+### embassy_tasks.elf
+A small embassy program (`embassy_tasks/`) on embassy-executor 0.10, the
+version rm-embedded-rs uses, for the task view: `main`, `blink::blink_task`
+(an argument, a local held across two `.await`s) and `worker` with
+`pool_size = 2`. Built with full LTO and one codegen unit to keep the file
+small; dependencies carry no debug info, as the task types are described by
+the fixture's own compile unit. `tasks.rs` tests check the `.await` line
+numbers in `src/main.rs`, so update them when the source moves.
+
+```bash
+cd tests/fixtures/embassy_tasks
+cargo build --release
+cp target/thumbv7em-none-eabihf/release/embassy_fixture ../embassy_tasks.elf
+```
+
 ### ../../../studio-core/tests/fixtures/rm_telemetry.elf
 The `telemetry` binary of the same project: an `rm_telemetry::Table` with two
 tunables and four watches of every cell kind, for the catalog decoder in

@@ -7,6 +7,7 @@ use std::time::Instant;
 
 use serde::Serialize;
 use studio_core::catalog::{Catalog, ElfImage, TableLayout};
+use studio_dwarf::tasks::{self, Task};
 use studio_dwarf::tree::{self, Children, ElfSummary, RootNode};
 use studio_dwarf::{ElfInfo, ElfParser, NodeRef};
 use tauri::State;
@@ -42,6 +43,8 @@ impl LoadedElf {
 pub struct OpenedElf {
     summary: ElfSummary,
     roots: Vec<RootNode>,
+    /// embassy task slots, browsable like roots
+    tasks: Vec<Task>,
     parse_ms: u64,
     catalog: Option<Catalog>,
     /// Why a declared tuning table could not be read
@@ -70,6 +73,7 @@ pub async fn open_elf(
     let opened = OpenedElf {
         summary: tree::summary(&elf),
         roots: tree::roots(&elf),
+        tasks: tasks::tasks(&elf),
         parse_ms: started.elapsed().as_millis() as u64,
         catalog: tuning.as_ref().map(|t| t.1.clone()),
         catalog_error,

@@ -36,6 +36,9 @@ pub const REOPEN_AFTER: Duration = Duration::from_millis(250);
 
 pub type RequestReply = SyncSender<Result<(), String>>;
 type PendingRequest = (TuneRequest, RequestReply);
+/// Bytes of each region read, in order
+pub type ReadReply = SyncSender<Result<Vec<Vec<u8>>, String>>;
+type PendingRead = (Vec<(u64, usize)>, ReadReply);
 
 #[derive(Debug, Clone, Copy)]
 enum TuneRequest {
@@ -67,6 +70,11 @@ pub enum SessionCommand {
     /// Sample tuning table values by id, as `(watch id, value id)`; used by a
     /// framed link, where values have no address. A probe session ignores it.
     SetCellWatches(Vec<(u32, u32)>),
+    /// Read target memory once, as `(address, length)` regions; needs a probe
+    Read {
+        regions: Vec<(u64, usize)>,
+        reply: ReadReply,
+    },
     Stop,
 }
 
@@ -214,6 +222,7 @@ struct Worker {
     tuner: Option<Tuner>,
     tune_tick: Ticker,
     requests: Vec<PendingRequest>,
+    reads: Vec<PendingRead>,
     framed: Option<RttTuning>,
 }
 
@@ -259,6 +268,7 @@ impl Worker {
             tuner: None,
             tune_tick: Ticker::new(start, TUNE_PERIOD),
             requests: Vec::new(),
+            reads: Vec::new(),
             framed,
         }
     }
@@ -290,6 +300,9 @@ impl Worker {
                             break;
                         }
                         for (_, reply) in self.requests.drain(..) {
+                            let _ = reply.send(Err("the target's memory is not open".into()));
+                        }
+                        for (_, reply) in self.reads.drain(..) {
                             let _ = reply.send(Err("the target's memory is not open".into()));
                         }
                     }
@@ -343,6 +356,7 @@ impl Worker {
                 return Exit::Stop;
             }
             let mut wrote = self.serve_requests(memory);
+            self.serve_reads(memory);
 
             let now = Instant::now();
             if self.sampler.as_mut().is_some_and(|s| s.poll(now)) {
@@ -409,6 +423,7 @@ impl Worker {
             }
             SessionCommand::Discard { reply } => self.requests.push((TuneRequest::Discard, reply)),
             SessionCommand::Save { reply } => self.requests.push((TuneRequest::Save, reply)),
+            SessionCommand::Read { regions, reply } => self.reads.push((regions, reply)),
             SessionCommand::SetCellWatches(_) => {}
             SessionCommand::Stop => {}
         }
@@ -485,6 +500,21 @@ impl Worker {
                     break;
                 }
             }
+        }
+    }
+
+    /// Answer queued one-off reads.
+    fn serve_reads(&mut self, memory: &mut dyn MemoryAccess) {
+        for (regions, reply) in std::mem::take(&mut self.reads) {
+            let bytes = regions
+                .into_iter()
+                .map(|(address, len)| {
+                    let mut buf = vec![0; len];
+                    memory.read(address, &mut buf).map(|()| buf)
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string());
+            let _ = reply.send(bytes);
         }
     }
 

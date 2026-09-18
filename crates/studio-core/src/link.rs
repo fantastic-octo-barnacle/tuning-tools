@@ -365,6 +365,9 @@ impl Worker {
                 SessionCommand::Save { reply } => {
                     self.request(cmd::SAVE, &self.token.to_le_bytes(), Pending::Save(reply))?;
                 }
+                SessionCommand::Read { reply, .. } => {
+                    let _ = reply.send(Err("reading target memory needs a debug probe".into()));
+                }
                 SessionCommand::SetRate(_)
                 | SessionCommand::SetWatches(_)
                 | SessionCommand::SetCatalog(_) => {}

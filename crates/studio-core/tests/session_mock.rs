@@ -153,3 +153,30 @@ fn failed_connect_reports_failure() {
         vec![LinkState::Connecting, LinkState::Failed]
     );
 }
+
+#[test]
+fn reads_memory_once_on_request() {
+    let mock = MockLink::new();
+    mock.poke(0x2000_0010, &[1, 0, 0, 0, 7]);
+    mock.fail_reads(0x2000_0100, 0x2000_0200);
+    let link = mock.clone();
+    let session = Session::spawn(
+        move || Ok(Box::new(link) as Box<dyn Link>),
+        SessionOptions {
+            rate_hz: 100.0,
+            elf: None,
+            rtt_address: None,
+        },
+        Arc::new(Collect::default()),
+    );
+    let read = |regions: Vec<(u64, usize)>| {
+        let (reply, rx) = std::sync::mpsc::sync_channel(1);
+        assert!(session.send(SessionCommand::Read { regions, reply }));
+        rx.recv_timeout(Duration::from_secs(5)).unwrap()
+    };
+
+    let bytes = read(vec![(0x2000_0010, 2), (0x2000_0014, 1)]).unwrap();
+    assert_eq!(bytes, [vec![1, 0], vec![7]]);
+    // One bad region fails the whole read
+    assert!(read(vec![(0x2000_0010, 2), (0x2000_0100, 4)]).is_err());
+}

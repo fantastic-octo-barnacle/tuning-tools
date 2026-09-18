@@ -15,6 +15,7 @@ use studio_core::link::{spawn_link, LinkOptions};
 use studio_core::plan::scalar_len;
 use studio_core::session::SessionOptions;
 use studio_core::{ReadItem, Session, SessionCommand, SessionEvent, SessionSink};
+use studio_dwarf::tasks::{self, TaskState};
 use studio_dwarf::tree::{self, NodeKind};
 use studio_dwarf::{ElfInfo, NodeRef, SymbolNode};
 use tauri::ipc::{Channel, InvokeResponseBody};
@@ -424,4 +425,66 @@ fn collect_leaves(
         _ => {}
     }
     Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskStatus {
+    /// The task slot's node path, as `Task.root.path`
+    path: String,
+    state: Option<TaskState>,
+    /// Why the state could not be read
+    error: Option<String>,
+}
+
+/// Read every embassy task's state in one pass over target memory.
+#[tauri::command]
+pub async fn session_task_states(
+    elf: State<'_, LoadedElf>,
+    state: State<'_, SessionState>,
+) -> Result<Vec<TaskStatus>, String> {
+    let elf = elf.current()?;
+    let probes: Vec<_> = tasks::tasks(&elf)
+        .into_iter()
+        .map(|t| {
+            let probe = tasks::probe(&elf, &t.root.node.node).map_err(|e| e.to_string());
+            (t.root.node.path, probe)
+        })
+        .collect();
+    let regions: Vec<(u64, usize)> = probes
+        .iter()
+        .filter_map(|(_, p)| p.as_ref().ok())
+        .flat_map(|p| p.regions())
+        .collect();
+    let (reply, rx) = mpsc::sync_channel(1);
+    if !state.send(SessionCommand::Read { regions, reply }) {
+        return Err("connect a debug probe first".into());
+    }
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        rx.recv_timeout(REQUEST_TIMEOUT)
+            .unwrap_or_else(|_| Err("the target did not answer in time".into()))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    let mut bytes = bytes.into_iter();
+    Ok(probes
+        .into_iter()
+        .map(|(path, probe)| match probe {
+            Ok(probe) => {
+                let mine: Vec<Vec<u8>> = bytes.by_ref().take(probe.regions().len()).collect();
+                let state = probe.decode(&mine);
+                TaskStatus {
+                    path,
+                    error: state.is_none().then(|| "short read".to_string()),
+                    state,
+                }
+            }
+            Err(error) => TaskStatus {
+                path,
+                state: None,
+                error: Some(error),
+            },
+        })
+        .collect())
 }

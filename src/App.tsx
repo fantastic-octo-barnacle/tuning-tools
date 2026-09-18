@@ -8,6 +8,7 @@ import { ConnectBar } from "./live/ConnectBar";
 import { LogConsole } from "./live/LogConsole";
 import { Scope } from "./live/Scope";
 import { StatusBar } from "./live/StatusBar";
+import { TasksPanel } from "./live/TasksPanel";
 import { TunePanel } from "./live/TunePanel";
 import { WatchTable } from "./live/WatchTable";
 import { useSession } from "./live/useSession";
@@ -22,13 +23,15 @@ export default function App() {
   const [selected, setSelected] = useState<SymbolNode | null>(null);
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [leftTab, setLeftTab] = useState<"symbols" | "tune">("symbols");
+  const [leftTab, setLeftTab] = useState<"symbols" | "tasks" | "tune">("symbols");
   const session = useSession();
   // A framed link lists its own values, so it works without an ELF
   const linkOnly = elf === null && session.catalog !== null;
   const watch = useWatches(elf?.summary.path ?? (linkOnly ? "link" : null), elf);
   const catalog = session.catalog ?? elf?.catalog ?? null;
-  const tab = linkOnly ? "tune" : leftTab;
+  const hasTasks = (elf?.tasks.length ?? 0) > 0;
+  const tab = linkOnly ? "tune" : leftTab === "tasks" && !hasTasks ? "symbols" : leftTab;
+  const tabs: (typeof leftTab)[] = elf ? ["symbols", ...(hasTasks ? (["tasks"] as const) : []), "tune"] : ["tune"];
 
   async function loadElf(path: string) {
     setLoading(fileName(path));
@@ -119,7 +122,7 @@ export default function App() {
         <main className="grid min-h-0 flex-1 grid-cols-[minmax(300px,30%)_1fr]">
           <section className="flex min-h-0 flex-col border-r border-rule">
             <div role="tablist" className="flex gap-1 border-b border-rule bg-panel px-2 pt-1.5">
-              {(elf ? (["symbols", "tune"] as const) : (["tune"] as const)).map((t) => (
+              {tabs.map((t) => (
                 <button
                   key={t}
                   role="tab"
@@ -129,20 +132,36 @@ export default function App() {
                     tab === t ? "border-rule bg-surface text-ink" : "border-transparent text-muted hover:text-ink"
                   }`}
                 >
-                  {t === "symbols" ? "Symbols" : `Tune${catalog ? ` (${catalog.entries.length})` : ""}`}
+                  {t === "symbols"
+                    ? "Symbols"
+                    : t === "tasks"
+                      ? `Tasks (${elf?.tasks.length ?? 0})`
+                      : `Tune${catalog ? ` (${catalog.entries.length})` : ""}`}
                 </button>
               ))}
             </div>
-            {tab === "symbols" && elf ? (
+            {(tab === "symbols" || tab === "tasks") && elf ? (
               <>
                 <div className="min-h-0 flex-1">
-                  <SymbolTree
-                    roots={elf.roots}
-                    selected={selected}
-                    onSelect={setSelected}
-                    onWatch={onWatch}
-                    watched={watchedPaths}
-                  />
+                  {tab === "symbols" ? (
+                    <SymbolTree
+                      roots={elf.roots}
+                      selected={selected}
+                      onSelect={setSelected}
+                      onWatch={onWatch}
+                      watched={watchedPaths}
+                    />
+                  ) : (
+                    <TasksPanel
+                      tasks={elf.tasks}
+                      connected={connected}
+                      carrier={session.link.carrier}
+                      selected={selected}
+                      onSelect={setSelected}
+                      onWatch={onWatch}
+                      watched={watchedPaths}
+                    />
+                  )}
                 </div>
                 <div className="max-h-[40%] shrink-0 overflow-auto border-t border-rule bg-surface">
                   <NodeDetails node={selected} roots={elf.roots} onWatch={onWatch} />

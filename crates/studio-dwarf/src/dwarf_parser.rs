@@ -14,7 +14,8 @@
 
 use super::type_table::{
     BaseClassDef, DwarfTypeKey, EnumDef, EnumVariant, ForwardDeclKind, GlobalTypeKey, MemberDef,
-    PrimitiveDef, StructDef, TemplateParam, TypeDef, TypeId, TypeTable, VariantDef, VariantPart,
+    PrimitiveDef, SourceLocation, StructDef, TemplateParam, TypeDef, TypeId, TypeTable, VariantDef,
+    VariantPart,
 };
 use gimli::{
     AttributeValue, DebuggingInformationEntry, Dwarf, EndianSlice, ReaderOffset, RunTimeEndian,
@@ -791,6 +792,7 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
                                 part.variants.push(VariantDef {
                                     discr_value,
                                     member,
+                                    location: self.decl_location(unit, gc.entry()),
                                 });
                             }
                             break;
@@ -1328,6 +1330,41 @@ impl<'a> DwarfParser<'a, Reader<'a>> {
     ) -> Option<String> {
         let attr = entry.attr_value(gimli::DW_AT_name).ok()??;
         self.attr_to_string(unit, &attr)
+    }
+
+    /// `DW_AT_decl_file` and `DW_AT_decl_line`, the file named through the
+    /// unit's line program.
+    fn decl_location(
+        &self,
+        unit: &Unit<Reader<'a>>,
+        entry: &DebuggingInformationEntry<Reader<'a>>,
+    ) -> Option<SourceLocation> {
+        let line = entry
+            .attr_value(gimli::DW_AT_decl_line)
+            .ok()??
+            .udata_value()?;
+        let index = match entry.attr_value(gimli::DW_AT_decl_file).ok()?? {
+            AttributeValue::FileIndex(i) => i,
+            other => other.udata_value()?,
+        };
+        let header = unit.line_program.as_ref()?.header();
+        let file = header.file(index)?;
+        // Line-table strings may sit in `.debug_line_str`, which only
+        // `Dwarf::attr_string` reads
+        let text = |attr| {
+            self.dwarf
+                .attr_string(unit, attr)
+                .ok()
+                .map(|s| s.to_string_lossy().into_owned())
+        };
+        let name = text(file.path_name())?;
+        let path = match file.directory(header).and_then(text) {
+            Some(dir) if !dir.is_empty() && !name.starts_with('/') => {
+                format!("{}/{name}", dir.trim_end_matches('/'))
+            }
+            _ => name,
+        };
+        Some(SourceLocation { file: path, line })
     }
 
     fn get_linkage_name(
